@@ -1,0 +1,452 @@
+/* Ported from legacy-index.html, plus additions for health/weapons/multiplayer HUD. */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #0b0f16;
+  font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  color: #fff;
+  user-select: none;
+  -webkit-user-select: none;
+}
+canvas#c {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  background: radial-gradient(ellipse at center, rgba(12, 20, 34, 0.78), rgba(4, 8, 14, 0.94));
+  z-index: 20;
+  text-align: center;
+  padding: 20px;
+  overflow: auto;
+}
+.overlay.hidden {
+  display: none;
+}
+h1 {
+  font-size: clamp(34px, 6vw, 70px);
+  letter-spacing: 0.12em;
+  font-weight: 800;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, #ffd45e, #ff7a45);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+h2 {
+  font-size: 34px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+.sub {
+  opacity: 0.8;
+  margin: 6px 0 22px;
+  font-size: 18px;
+}
+button {
+  font: inherit;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+button:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+button.big {
+  font-size: 22px;
+  font-weight: 700;
+  padding: 14px 56px;
+  background: linear-gradient(90deg, #ff9a3c, #ff5e3a);
+  border: none;
+  box-shadow: 0 6px 24px rgba(255, 100, 50, 0.4);
+}
+button.big:hover {
+  filter: brightness(1.12);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btnrow {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 6px 0 16px;
+}
+.ctrls {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 26px 0 12px;
+}
+.card {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  padding: 12px 18px;
+  text-align: left;
+  min-width: 210px;
+  font-size: 14px;
+  line-height: 1.75;
+}
+.card b {
+  display: block;
+  margin-bottom: 4px;
+  color: #ffc069;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 13px;
+}
+kbd {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: inherit;
+  font-size: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+.note {
+  font-size: 13px;
+  opacity: 0.65;
+  max-width: 620px;
+}
+.err {
+  color: #ff8080;
+  margin-top: 10px;
+  font-weight: 600;
+}
+input.nameInput {
+  font: inherit;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 10px 0;
+  width: 260px;
+  text-align: center;
+}
+.serverStatus {
+  font-size: 13px;
+  opacity: 0.75;
+  margin-top: 4px;
+  min-height: 1.2em;
+}
+.serverStatus.online {
+  color: #4ade80;
+}
+.serverStatus.offline {
+  color: #f87171;
+}
+
+#hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+#hud.hidden {
+  display: none;
+}
+#modeBox {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+#clock {
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+#topBtns {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+#prompt {
+  position: absolute;
+  left: 50%;
+  bottom: 16%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.55);
+  padding: 9px 20px;
+  border-radius: 10px;
+  font-size: 18px;
+  font-weight: 600;
+  display: none;
+  white-space: nowrap;
+}
+#toast {
+  position: absolute;
+  left: 50%;
+  top: 14%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.6);
+  padding: 8px 18px;
+  border-radius: 10px;
+  font-size: 16px;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+#toast.show {
+  opacity: 1;
+}
+#mini {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.5), 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+#speedo {
+  position: absolute;
+  right: 22px;
+  bottom: 18px;
+  text-align: right;
+  display: none;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 10px 18px;
+  border-radius: 12px;
+  min-width: 150px;
+}
+#spdNum {
+  font-size: 48px;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+#speedo .u {
+  font-size: 13px;
+  opacity: 0.7;
+  letter-spacing: 0.1em;
+}
+#spdBar {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+#spdFill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, #4ade80, #facc15, #ef4444);
+}
+
+/* ===== Health ===== */
+#healthBox {
+  position: absolute;
+  left: 16px;
+  bottom: 206px;
+  width: 180px;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+#healthLabel {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+#healthBarBg {
+  height: 10px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 5px;
+  overflow: hidden;
+}
+#healthBarFill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: #4ade80;
+  transition: background-color 0.2s;
+}
+#damageVignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(255, 0, 0, 0) 55%, rgba(220, 20, 20, 0.55) 100%);
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+/* ===== Weapons ===== */
+#crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  display: none;
+}
+#crosshair::before,
+#crosshair::after {
+  content: "";
+  position: absolute;
+  background: rgba(255, 255, 255, 0.85);
+}
+#crosshair::before {
+  left: 8px;
+  top: 0;
+  width: 2px;
+  height: 18px;
+}
+#crosshair::after {
+  top: 8px;
+  left: 0;
+  width: 18px;
+  height: 2px;
+}
+#hitMarker {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  color: #ff3b3b;
+  font-size: 24px;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.1s;
+}
+#ammoBox {
+  position: absolute;
+  right: 22px;
+  bottom: 18px;
+  text-align: right;
+  display: none;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 10px 18px;
+  border-radius: 12px;
+  min-width: 150px;
+}
+#weaponName {
+  font-size: 13px;
+  opacity: 0.8;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+#ammoCount {
+  font-size: 32px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+#reloadIndicator {
+  font-size: 12px;
+  color: #ffc069;
+  font-weight: 700;
+  margin-top: 2px;
+  display: none;
+}
+#killFeed {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+  max-width: 320px;
+}
+.killFeedItem {
+  background: rgba(0, 0, 0, 0.55);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  opacity: 1;
+  transition: opacity 0.4s;
+}
+#scoreboard {
+  position: absolute;
+  left: 50%;
+  top: 18%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.75);
+  border-radius: 10px;
+  padding: 14px 18px;
+  display: none;
+  min-width: 360px;
+}
+#scoreboard table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+#scoreboard th {
+  text-align: left;
+  opacity: 0.7;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding-bottom: 6px;
+}
+#scoreboard td {
+  padding: 3px 6px 3px 0;
+}
+#deathOverlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  background: rgba(10, 2, 2, 0.75);
+  text-align: center;
+}
+#deathOverlay h2 {
+  color: #ff5050;
+  font-size: 44px;
+}
+#deathOverlay .killer {
+  font-size: 16px;
+  opacity: 0.85;
+  margin-bottom: 6px;
+}
+#deathOverlay .countdown {
+  font-size: 22px;
+  font-weight: 700;
+  margin-top: 10px;
+}
