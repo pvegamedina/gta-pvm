@@ -4,6 +4,7 @@ import {
   MAX_PLAYERS,
   RANGE_TOLERANCE,
   RESPAWN_DELAY_MS,
+  SESSION_REPLACED_MESSAGE,
   SPAWN_POINTS,
   WEAPONS,
   type ClientMessage,
@@ -17,6 +18,7 @@ import {
 import {
   isDamageCause,
   isRecord,
+  isValidSessionId,
   isWeaponId,
   parseMotion,
   parseVec3,
@@ -29,6 +31,10 @@ export interface RoomDeps {
   broadcast: (msg: ServerMessage, exceptId?: string) => void;
   random: () => number;
   schedule: (fn: () => void, ms: number) => void;
+  /** Forcibly closes another client's live connection (used to enforce "one
+   * active session per browser" — see onHello). The transport's own "close"
+   * handler is expected to call room.leave() for it, same as any disconnect. */
+  disconnect: (clientId: string) => void;
 }
 
 interface Player extends PlayerSnapshot {
@@ -39,9 +45,31 @@ interface Player extends PlayerSnapshot {
 const CAR_DAMAGE_FACTOR = 0.6;
 const BRIGHT_COLOR_SATURATION = 0.85;
 
+/** Walking-pace contact doesn't count as a ram (mirrors client's on-foot
+ * vehicle-hit threshold in combat/health.ts). */
+const RAM_SPEED_THRESHOLD = 6;
+const RAM_DAMAGE_PER_UNIT = 2.2;
+const RAM_DAMAGE_CAP = 70;
+/** Per-attacker/target cooldown so one continuous contact can't melt someone in one frame. */
+const RAM_COOLDOWN_MS = 500;
+/** Plausible contact distance between the two players' last known positions. */
+const RAM_MAX_DISTANCE = 12;
+/** Attacker-reported car speed is clamped before scaling damage. */
+const RAM_MAX_SPEED = 40;
+
+function ramDamage(speed: number): number {
+  if (speed <= RAM_SPEED_THRESHOLD) return 0;
+  return Math.min(RAM_DAMAGE_CAP, (speed - RAM_SPEED_THRESHOLD) * RAM_DAMAGE_PER_UNIT);
+}
+
 export class GameRoom {
   private readonly players = new Map<string, Player>();
   private readonly connected = new Set<string>();
+  private readonly lastRamAt = new Map<string, number>();
+  /** sessionId -> the connection id currently "owning" it (one active socket
+   * per browser session). */
+  private readonly sessionOwners = new Map<string, string>();
+  private readonly playerSessionId = new Map<string, string>();
   private joinCounter = 0;
 
   constructor(private readonly deps: RoomDeps) {}
@@ -53,16 +81,26 @@ export class GameRoom {
   leave(id: string): void {
     this.connected.delete(id);
     if (this.players.delete(id)) this.deps.broadcast({ t: "playerLeft", id });
+    for (const key of this.lastRamAt.keys()) {
+      if (key.startsWith(`${id}>`) || key.endsWith(`>${id}`)) this.lastRamAt.delete(key);
+    }
+    const sid = this.playerSessionId.get(id);
+    this.playerSessionId.delete(id);
+    // Only clear the session's owner if *this* connection still held it — a
+    // reconnect may already have claimed it (see onHello), and that claim
+    // must survive the old connection's belated close.
+    if (sid !== undefined && this.sessionOwners.get(sid) === id) this.sessionOwners.delete(sid);
   }
 
   handle(id: string, msg: ClientMessage): void {
     if (!this.connected.has(id) || !isRecord(msg)) return;
-    if (msg.t === "hello") return this.onHello(id, msg.name);
+    if (msg.t === "hello") return this.onHello(id, msg.name, msg.sessionId);
     const player = this.players.get(id);
     if (!player) return;
     switch (msg.t) {
       case "state": return this.onState(player, msg.motion);
       case "shoot": return this.onShoot(player, msg);
+      case "ram": return this.onRam(player, msg);
       case "selfDamage": return this.onSelfDamage(player, msg.amount, msg.cause);
       case "ping": return this.onPing(id, msg.ts);
     }
@@ -77,12 +115,29 @@ export class GameRoom {
 
   /* ---------- handlers ---------- */
 
-  private onHello(id: string, rawName: unknown): void {
+  /** Enforces "one active session per browser": a fresh sessionId just
+   * registers; a sessionId already owned by another LIVE connection kicks
+   * that connection (error + forced close) before this one claims it. The
+   * resumed session gets a fresh player slot (simpler than transplanting
+   * kills/deaths/name across two Player records, and keeps GameRoom's model
+   * — one Player per connection id — unchanged). */
+  private claimSession(id: string, sessionId: string): void {
+    const previousOwner = this.sessionOwners.get(sessionId);
+    if (previousOwner !== undefined && previousOwner !== id && this.connected.has(previousOwner)) {
+      this.deps.send(previousOwner, { t: "error", message: SESSION_REPLACED_MESSAGE });
+      this.deps.disconnect(previousOwner);
+    }
+    this.sessionOwners.set(sessionId, id);
+    this.playerSessionId.set(id, sessionId);
+  }
+
+  private onHello(id: string, rawName: unknown, rawSessionId: unknown): void {
     if (this.players.has(id)) return;
     if (this.players.size >= MAX_PLAYERS) {
       this.deps.send(id, { t: "error", message: "Servidor lleno" });
       return;
     }
+    if (isValidSessionId(rawSessionId)) this.claimSession(id, rawSessionId);
     this.joinCounter++;
     const player: Player = {
       id,
@@ -127,6 +182,24 @@ export class GameRoom {
     const base = WEAPONS[msg.weapon].damage;
     const damage = target.motion?.car ? Math.round(base * CAR_DAMAGE_FACTOR) : base;
     this.applyDamage(target, damage, { attackerId: shooter.id, weapon: msg.weapon, cause: null });
+  }
+
+  private onRam(attacker: Player, msg: Record<string, unknown>): void {
+    if (!attacker.alive) return;
+    const { targetId, speed } = msg;
+    if (typeof targetId !== "string" || targetId === attacker.id) return;
+    if (typeof speed !== "number" || !Number.isFinite(speed)) return;
+    const target = this.players.get(targetId);
+    if (!target || !target.alive || !target.motion || !attacker.motion) return;
+    if (distance(attacker.motion.p, target.motion.p) > RAM_MAX_DISTANCE) return;
+    const key = `${attacker.id}>${targetId}`;
+    const now = this.deps.now();
+    const last = this.lastRamAt.get(key);
+    if (last !== undefined && now - last < RAM_COOLDOWN_MS) return;
+    this.lastRamAt.set(key, now);
+    const damage = ramDamage(Math.min(Math.abs(speed), RAM_MAX_SPEED));
+    if (damage <= 0) return;
+    this.applyDamage(target, damage, { attackerId: attacker.id, weapon: null, cause: "vehicle" });
   }
 
   private onSelfDamage(player: Player, amount: unknown, cause: unknown): void {

@@ -28,13 +28,15 @@ export class NetClient {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private closed = false;
   private name: string;
+  private sessionId: string;
   private getMotion: (() => PlayerMotion) | null = null;
   private playerCount = 0;
   public status: ConnectionStatus = "connecting";
 
-  constructor(url: string, name: string, events: NetClientEvents) {
+  constructor(url: string, name: string, sessionId: string, events: NetClientEvents) {
     this.url = url;
     this.name = name;
+    this.sessionId = sessionId;
     this.events = events;
   }
 
@@ -55,7 +57,7 @@ export class NetClient {
     this.ws = ws;
     ws.addEventListener("open", () => {
       this.reconnectAttempt = 0;
-      this.send({ t: "hello", name: this.name });
+      this.send({ t: "hello", name: this.name, sessionId: this.sessionId });
       this.pingTimer = setInterval(() => this.send({ t: "ping", ts: Date.now() }), 2000);
       this.stateTimer = setInterval(() => {
         if (this.getMotion) this.send({ t: "state", motion: this.getMotion() });
@@ -130,5 +132,6 @@ export class NetClient {
     this.clearTimers();
     this.ws?.close();
     this.ws = null;
+    this.setStatus("offline");
   }
 }

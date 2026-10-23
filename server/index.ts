@@ -17,7 +17,7 @@ import { isRecord } from "./validation";
 const PORT = Number(process.env.PORT) || Number(process.env.WS_PORT) || SERVER_PORT;
 const MAX_PAYLOAD_BYTES = 16 * 1024;
 const HEARTBEAT_MS = 10_000;
-const CLIENT_TYPES = new Set(["hello", "state", "shoot", "selfDamage", "ping"]);
+const CLIENT_TYPES = new Set(["hello", "state", "shoot", "ram", "selfDamage", "ping"]);
 
 const sockets = new Map<string, WebSocket>();
 const alive = new WeakSet<WebSocket>();
@@ -36,6 +36,12 @@ const room = new GameRoom({
     for (const [id, socket] of sockets) {
       if (id !== exceptId && socket.readyState === WebSocket.OPEN) socket.send(data);
     }
+  },
+  disconnect: (id) => {
+    const socket = sockets.get(id);
+    // Close (not terminate) so the queued "error" send above actually
+    // reaches the client before the connection drops.
+    if (socket?.readyState === WebSocket.OPEN) socket.close();
   },
 });
 

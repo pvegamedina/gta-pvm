@@ -38,11 +38,25 @@ describe("InterpolationBuffer", () => {
     expect(buf.sample(0)?.p[0]).toBe(0);
   });
 
-  it("clamps to the latest sample when the render time is after it", () => {
+  it("extrapolates briefly from the last known velocity when the buffer runs dry", () => {
+    const buf = new InterpolationBuffer();
+    buf.push(motion(0), 0);
+    buf.push(motion(10), 100); // velocity: 0.1 units/ms
+    // Render time just past the last sample (buffer dry by a small margin) —
+    // should keep moving in the same direction instead of freezing instantly.
+    const s = buf.sample(100 + INTERP_DELAY_MS + 20);
+    expect(s!.p[0]).toBeGreaterThan(10);
+    expect(s!.p[0]).toBeCloseTo(12, 1); // 10 + 0.1*20
+  });
+
+  it("eventually holds the last known pose instead of extrapolating forever", () => {
     const buf = new InterpolationBuffer();
     buf.push(motion(0), 0);
     buf.push(motion(10), 100);
-    expect(buf.sample(100000)?.p[0]).toBe(10);
+    // Long past the last sample (e.g. the remote player disconnected) — must
+    // not have drifted off to a wild position.
+    const s = buf.sample(100000);
+    expect(s!.p[0]).toBeLessThan(50);
   });
 
   it("drops samples older than the retention window", () => {

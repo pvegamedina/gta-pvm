@@ -147,6 +147,16 @@ export function updatePeds(
   }
 }
 
+/** Current world position of a ped (ring position + dodge offset), for callers
+ * that need it outside the per-frame updatePeds loop (e.g. vehicle-ram checks). */
+export function pedPosition(p: Ped): { x: number; z: number } {
+  const out = { x: 0, z: 0 };
+  ringPos(p.bi, p.bj, p.s, out);
+  out.x += p.ox;
+  out.z += p.oz;
+  return out;
+}
+
 /** Ped takes a hit: falls over, starts the respawn timer, and nearby peds flee. */
 export function hitPed(p: Ped): void {
   if (p.state === "down") return;

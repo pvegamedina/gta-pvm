@@ -55,10 +55,15 @@ export function castShot(
   range: number,
   registry: ShootableRegistry,
   minDistance: number,
+  camera: THREE.Camera,
 ): RaycastShotResult {
   raycaster.set(origin, dir);
   raycaster.far = range;
   raycaster.near = Math.max(0.01, minDistance);
+  // Required for THREE.Sprite.raycast() (name/health tags on remote players
+  // sit inside the shootable groups) — without it, Sprite.raycast throws
+  // reading raycaster.camera.matrixWorld on a null camera.
+  raycaster.camera = camera;
   const hits = raycaster.intersectObjects(registry.list(), true);
   if (hits.length > 0) {
     const h = hits[0];

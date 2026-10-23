@@ -4,10 +4,16 @@
 // Pure logic — no THREE/DOM deps — so it is unit-testable.
 
 import type { PlayerMotion } from "@shared/protocol";
-import { angLerp } from "../core/math";
+import { angLerp, lerp } from "../core/math";
 
-export const INTERP_DELAY_MS = 100;
+export const INTERP_DELAY_MS = 120;
 const MAX_BUFFER_MS = 1000;
+/** Once the render clock runs past the newest sample (buffer ran dry — a late
+ * or dropped network tick), keep extrapolating from the last known velocity
+ * for up to this long before giving up and holding the last known pose.
+ * Smooths over ordinary jitter without ever producing an unbounded drift if
+ * updates genuinely stop (e.g. the remote player disconnected). */
+const MAX_EXTRAPOLATION_MS = 250;
 
 export interface Snapshot {
   t: number; // ms, local receive clock
@@ -34,7 +40,10 @@ export class InterpolationBuffer {
     if (this.buf.length === 1) return this.buf[0].motion;
     if (renderT <= this.buf[0].t) return this.buf[0].motion;
     const last = this.buf[this.buf.length - 1];
-    if (renderT >= last.t) return last.motion;
+    if (renderT >= last.t) {
+      const prev = this.buf[this.buf.length - 2];
+      return extrapolateMotion(prev.motion, last.motion, last.t - prev.t, renderT - last.t);
+    }
     for (let i = 0; i < this.buf.length - 1; i++) {
       const a = this.buf[i];
       const b = this.buf[i + 1];
@@ -46,6 +55,29 @@ export class InterpolationBuffer {
     }
     return last.motion;
   }
+}
+
+/** Continues the velocity implied by the last two samples for `aheadMs`
+ * beyond the newest one (capped at MAX_EXTRAPOLATION_MS), instead of visibly
+ * freezing the instant the buffer runs dry. Discrete fields (weapon/aiming/
+ * ground/car) just hold the newest known value — only position/yaw, which
+ * read as motion, are extrapolated. */
+function extrapolateMotion(prev: PlayerMotion, last: PlayerMotion, spanMs: number, aheadMs: number): PlayerMotion {
+  const capped = Math.min(aheadMs, MAX_EXTRAPOLATION_MS);
+  if (spanMs <= 0 || capped <= 0) return last;
+  const t = 1 + capped / spanMs;
+  return {
+    p: [lerp(prev.p[0], last.p[0], t), lerp(prev.p[1], last.p[1], t), lerp(prev.p[2], last.p[2], t)],
+    yaw: angLerp(prev.yaw, last.yaw, t),
+    speed: last.speed,
+    ground: last.ground,
+    weapon: last.weapon,
+    aiming: last.aiming,
+    car:
+      last.car && prev.car
+        ? { type: last.car.type, color: last.car.color, yaw: angLerp(prev.car.yaw, last.car.yaw, t), speed: last.car.speed, steer: last.car.steer }
+        : last.car,
+  };
 }
 
 function lerpMotion(a: PlayerMotion, b: PlayerMotion, t: number): PlayerMotion {

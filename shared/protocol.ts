@@ -7,6 +7,11 @@ export const TICK_RATE_HZ = 20;
 export const MAX_HEALTH = 100;
 export const RESPAWN_DELAY_MS = 3000;
 export const MAX_NAME_LENGTH = 16;
+export const MAX_SESSION_ID_LENGTH = 100;
+/** Sent to (and matched by) both sides when a sessionId reconnect kicks the
+ * previous live socket for the same browser session — see server/room.ts
+ * onHello/claimSession and the client's "error" handling in game.ts. */
+export const SESSION_REPLACED_MESSAGE = "Sesión reemplazada por otra pestaña";
 export const MAX_PLAYERS = 16;
 
 export type Vec3 = [number, number, number];
@@ -118,7 +123,14 @@ export type DamageCause = "vehicle" | "fall" | "explosion";
 
 /* ================= CLIENT -> SERVER ================= */
 export type ClientMessage =
-  | { t: "hello"; name: string }
+  | {
+      t: "hello";
+      name: string;
+      /** Client-generated id persisted in localStorage (falls back to an
+       * ephemeral per-tab id when storage is unavailable). Optional/additive
+       * so older clients without it still work — see server/room.ts. */
+      sessionId?: string;
+    }
   | { t: "state"; motion: PlayerMotion }
   | {
       t: "shoot";
@@ -130,6 +142,14 @@ export type ClientMessage =
       targetId: string | null;
     }
   | { t: "selfDamage"; amount: number; cause: DamageCause }
+  | {
+      /** The local driver's car hit another player's hitbox — server-validated
+       * analogous to "shoot" (alive/self/distance checks + damage scaling). */
+      t: "ram";
+      targetId: string;
+      /** Attacker's car speed (m/s) at the moment of contact; drives damage scaling. */
+      speed: number;
+    }
   | { t: "ping"; ts: number };
 
 /* ================= SERVER -> CLIENT ================= */

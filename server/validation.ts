@@ -1,5 +1,6 @@
 import {
   MAX_NAME_LENGTH,
+  MAX_SESSION_ID_LENGTH,
   WEAPONS,
   type CarState,
   type DamageCause,
@@ -20,6 +21,11 @@ const sane = (v: unknown): v is number =>
   typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= ABSURD;
 
 const clamp = (v: number, lim: number) => Math.max(-lim, Math.min(lim, v));
+
+/** RGB hex colors (0xc0392b-style, up to 0xffffff) are far outside the generic
+ * position/speed sanity range, so they get their own, wider bound. */
+const saneColor = (v: unknown): v is number =>
+  typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 0xffffff;
 
 export function isWeaponId(v: unknown): v is WeaponId {
   return typeof v === "string" && Object.hasOwn(WEAPONS, v);
@@ -42,7 +48,7 @@ function parseCar(v: unknown): CarState | null | undefined {
   if (!isRecord(v)) return undefined;
   const { type, color, yaw, speed, steer } = v;
   if (typeof type !== "string" || type.length > 24) return undefined;
-  if (![color, yaw, speed, steer].every(sane)) return undefined;
+  if (!saneColor(color) || ![yaw, speed, steer].every(sane)) return undefined;
   return { type, color: color as number, yaw: yaw as number, speed: speed as number, steer: steer as number };
 }
 
@@ -56,6 +62,12 @@ export function parseMotion(v: unknown): PlayerMotion | null {
   if (typeof v.ground !== "boolean" || typeof v.aiming !== "boolean") return null;
   if (!isWeaponId(v.weapon)) return null;
   return { p, yaw: v.yaw, speed: v.speed, ground: v.ground, weapon: v.weapon, aiming: v.aiming, car };
+}
+
+/** A sane session id: a non-empty, reasonably short string. We don't care
+ * about its exact shape — it's an opaque client-generated identifier. */
+export function isValidSessionId(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0 && v.length <= MAX_SESSION_ID_LENGTH;
 }
 
 export function sanitizeName(raw: unknown, fallback: string): string {

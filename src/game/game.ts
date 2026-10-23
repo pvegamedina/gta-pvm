@@ -10,6 +10,7 @@ import {
   MAX_HEALTH,
   RESPAWN_DELAY_MS,
   MAX_NAME_LENGTH,
+  SESSION_REPLACED_MESSAGE,
   type WeaponId,
   type PlayerMotion,
   type ServerMessage,
@@ -37,7 +38,7 @@ import { createPlayerState, type PlayerState } from "./player/playerState";
 import { updateFoot, footSpeed } from "./player/foot";
 import { nearestVehicle, enterCar, exitCar, forceExitCar } from "./player/enterExit";
 
-import { spawnPeds, updatePeds, hitPed, spookPedsNear, type Ped } from "./pedestrians/peds";
+import { spawnPeds, updatePeds, hitPed, spookPedsNear, pedPosition, type Ped } from "./pedestrians/peds";
 
 import { createCameraState, snapCamera, updateCamera } from "./camera/camera";
 import { createAudioSystem } from "./audio/audio";
@@ -74,6 +75,30 @@ function saveName(n: string): void {
     localStorage.setItem("gta-pvm:name", n);
   } catch {
     // ignore
+  }
+}
+
+const SESSION_ID_KEY = "gta-pvm:sessionId";
+
+function newSessionId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `sid-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** One session id per browser, persisted in localStorage so a page reload
+ * (same tab/browser) resumes the same session (see server/room.ts onHello).
+ * Falls back to an ephemeral in-memory id when storage is unavailable
+ * (private browsing, blocked site data, etc.) — the game must not crash, it
+ * just won't be recognized as "the same session" across a reload in that case. */
+function loadOrCreateSessionId(): string {
+  try {
+    const existing = localStorage.getItem(SESSION_ID_KEY);
+    if (existing) return existing;
+    const fresh = newSessionId();
+    localStorage.setItem(SESSION_ID_KEY, fresh);
+    return fresh;
+  } catch {
+    return newSessionId();
   }
 }
 
@@ -131,6 +156,7 @@ export function createGame(): GameHandle {
   // ---------------- Networking ----------------
   let myId: string | null = null;
   let myName = loadName();
+  const mySessionId = loadOrCreateSessionId();
   let pendingSpawn: { x: number; z: number; yaw: number } | null = null;
   let localPing = 0;
   let localKills = 0;
@@ -139,7 +165,7 @@ export function createGame(): GameHandle {
   const nameInput = $("nameInput") as HTMLInputElement | null;
   if (nameInput) nameInput.value = myName;
 
-  const net = new NetClient(defaultServerUrl(), myName, {
+  const net = new NetClient(defaultServerUrl(), myName, mySessionId, {
     onStatus: (status, count) => {
       if (status === "connecting") hud.setServerStatus("Conectando…", "");
       else if (status === "online") hud.setServerStatus(`En línea · ${count} jugador${count === 1 ? "" : "es"}`, "online");
@@ -169,7 +195,12 @@ export function createGame(): GameHandle {
       case "welcome": {
         myId = msg.id;
         pendingSpawn = msg.spawn;
-        for (const p of msg.players) remotePlayers.add(p);
+        // msg.players includes this client's own snapshot — skip it, it is
+        // not a remote player.
+        for (const p of msg.players) {
+          if (p.id === msg.id) continue;
+          remotePlayers.add(p);
+        }
         break;
       }
       case "playerJoined":
@@ -235,6 +266,15 @@ export function createGame(): GameHandle {
       case "pong":
         localPing = Math.max(0, Math.round(performance.now() - msg.ts));
         break;
+      case "error": {
+        toast(msg.message);
+        if (msg.message === SESSION_REPLACED_MESSAGE) {
+          // Another tab/reload just claimed this browser session — stop
+          // auto-reconnecting, or we'd immediately kick it right back.
+          net.close();
+        }
+        break;
+      }
       default:
         break;
     }
@@ -409,7 +449,7 @@ export function createGame(): GameHandle {
       if (!tryMelee(ammo, WEAPONS.fists)) return;
       const dir = camera.getWorldDirection(new THREE.Vector3());
       const origin = camera.position.clone();
-      const res = castShot(origin, dir, WEAPONS.fists.range, shootables, 0.3);
+      const res = castShot(origin, dir, WEAPONS.fists.range, shootables, 0.3, camera);
       if (res.hit && (res.hit.kind === "ped" || res.hit.kind === "remotePlayer")) {
         if (res.hit.kind === "ped") hitPed(res.hit.refId as Ped);
         else {
@@ -440,8 +480,10 @@ export function createGame(): GameHandle {
       dir.normalize();
     }
     const origin = camera.position.clone();
-    const res = castShot(origin, dir, spec.range, shootables, 0.3);
-    effects.muzzleFlash(origin.clone().addScaledVector(dir, 0.3));
+    const res = castShot(origin, dir, spec.range, shootables, 0.3, camera);
+    // Camera near plane is 0.5 — place the flash sprite past it or it gets
+    // clipped and never renders.
+    effects.muzzleFlash(origin.clone().addScaledVector(dir, 1.2));
     effects.tracer(origin, res.point);
     effects.gunshot(id, 0);
     cam.shake = Math.min(1, cam.shake + (id === "m4" ? 0.08 : 0.12));
@@ -584,6 +626,16 @@ export function createGame(): GameHandle {
 
   // ---------------- Fixed-step simulation ----------------
   let lastVehicleHitAt = -Infinity;
+  /** Local throttle for "ram" messages per remote target — the server also
+   * rate-limits per attacker/target pair; this just avoids spamming it every
+   * frame while in continuous contact. */
+  const lastRamAt = new Map<string, number>();
+  const RAM_LOCAL_COOLDOWN_S = 0.5;
+  /** Fraction of speed the car keeps after absorbing a ram impact (there is no
+   * separate vehicle-health stat in this codebase — the bit of "vehicle
+   * impact damage" is modeled as a speed/momentum loss on hard contact,
+   * distinct from the driver's own crash-damage health hit above). */
+  const RAM_IMPACT_SPEED_RETENTION = 0.82;
 
   function step(dt: number): void {
     tClock += dt;
@@ -599,6 +651,14 @@ export function createGame(): GameHandle {
       } else if (player.car) {
         const input = { up: !!(keys.KeyW || keys.ArrowUp), down: !!(keys.KeyS || keys.ArrowDown), left: !!(keys.KeyA || keys.ArrowLeft), right: !!(keys.KeyD || keys.ArrowRight), handbrake: !!keys.Space };
         const impact = updatePlayerCar(player.car, dt, input, grid, vehicles);
+        // Keep the player's own transform mirroring the car while driving —
+        // buildMotion() reads player.x/y/z/yaw (not player.car's), so without
+        // this a remote client would see the car rendered but frozen at the
+        // position/heading it was entered from, never actually moving.
+        player.x = player.car.x;
+        player.y = player.car.y;
+        player.z = player.car.z;
+        player.yaw = player.car.yaw;
         if (impact > 7) {
           cam.shake = Math.min(1, impact / 25);
           audio.thump(impact);
@@ -610,6 +670,9 @@ export function createGame(): GameHandle {
           hud.flashDamage();
           if (killed) onLocalDeath(null);
         }
+        // Ramming peds/players is a separate concern from "I hit a wall":
+        // it never touches the driver's own health (only crashDamage above does).
+        checkCarRam();
       }
     } else {
       // Ragdoll-ish fall while dead.
@@ -661,6 +724,48 @@ export function createGame(): GameHandle {
           return;
         }
       }
+    }
+  }
+
+  /** Ramming (atropellar): the local player's own car hitting a pedestrian or
+   * a remote player's hitbox, gated by relative speed so idling into someone
+   * at walking pace doesn't hurt them. Peds are resolved locally (same as a
+   * gunshot hit); remote players are reported to the server, which validates
+   * and applies the damage authoritatively (see server/room.ts onRam). */
+  function checkCarRam(): void {
+    const car = player.car;
+    if (!car) return;
+    const speed = Math.abs(car.speed);
+    if (speed < VEHICLE_HIT_SPEED_THRESHOLD) return;
+    const rs = 0.5 + car.spec.rad;
+
+    for (const p of peds) {
+      if (p.state === "down") continue;
+      const pos = pedPosition(p);
+      const dx = car.x - pos.x;
+      const dz = car.z - pos.z;
+      if (dx * dx + dz * dz >= rs * rs) continue;
+      hitPed(p);
+      spookPedsNear(peds, pos.x, pos.z, 10);
+      car.vx *= RAM_IMPACT_SPEED_RETENTION;
+      car.vz *= RAM_IMPACT_SPEED_RETENTION;
+      cam.shake = Math.min(1, cam.shake + 0.1);
+    }
+
+    for (const rp of remotePlayers.all()) {
+      // Remote players currently driving are a car-vs-car collision, not a
+      // ram-a-person hit — out of scope here.
+      if (!rp.alive || rp.car || !rp.lastMotion) continue;
+      const dx = car.x - rp.lastMotion.p[0];
+      const dz = car.z - rp.lastMotion.p[2];
+      if (dx * dx + dz * dz >= rs * rs) continue;
+      const last = lastRamAt.get(rp.id);
+      if (last !== undefined && tClock - last < RAM_LOCAL_COOLDOWN_S) continue;
+      lastRamAt.set(rp.id, tClock);
+      net.send({ t: "ram", targetId: rp.id, speed });
+      car.vx *= RAM_IMPACT_SPEED_RETENTION;
+      car.vz *= RAM_IMPACT_SPEED_RETENTION;
+      cam.shake = Math.min(1, cam.shake + 0.12);
     }
   }
 

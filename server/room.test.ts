@@ -19,12 +19,17 @@ function setup() {
   const sent: Sent[] = [];
   const broadcasts: Broadcast[] = [];
   const timers: { fn: () => void; at: number }[] = [];
+  const disconnected: string[] = [];
   const room = new GameRoom({
     now: () => time,
     send: (to, msg) => sent.push({ to, msg }),
     broadcast: (msg, except) => broadcasts.push({ msg, except }),
     random: () => 0.5,
     schedule: (fn, ms) => { timers.push({ fn, at: time + ms }); },
+    disconnect: (id) => {
+      disconnected.push(id);
+      room.leave(id); // mirrors the real socket "close" handler in server/index.ts
+    },
   });
   const advance = (ms: number) => {
     time += ms;
@@ -37,7 +42,7 @@ function setup() {
     sent.filter((s) => s.to === id && s.msg.t === type).map((s) => s.msg);
   const bcast = (type: ServerMessage["t"]) =>
     broadcasts.filter((b) => b.msg.t === type);
-  return { room, sent, broadcasts, advance, sentTo, bcast };
+  return { room, sent, broadcasts, advance, sentTo, bcast, disconnected };
 }
 
 const motion = (x: number, z = 0, car: PlayerMotion["car"] = null): PlayerMotion => ({
@@ -87,6 +92,52 @@ describe("GameRoom", () => {
     expect(w2.players.find((p) => p.id === "b")?.name).toMatch(/^Jugador \d+$/);
   });
 
+  it("replaces the previous live socket when the same sessionId reconnects", () => {
+    c.room.join("old");
+    c.room.handle("old", { t: "hello", name: "Ana", sessionId: "S1" } as unknown as ClientMessage);
+    c.room.join("new");
+    c.room.handle("new", { t: "hello", name: "Ana2", sessionId: "S1" } as unknown as ClientMessage);
+
+    expect(c.disconnected).toEqual(["old"]);
+    expect(c.sentTo("old", "error")).toHaveLength(1);
+    expect((c.sentTo("old", "error")[0] as Extract<ServerMessage, { t: "error" }>).message).toMatch(/sesión|session/i);
+    expect(c.bcast("playerLeft").some((b) => (b.msg as { id: string }).id === "old")).toBe(true);
+
+    const welcome = c.sentTo("new", "welcome")[0] as Extract<ServerMessage, { t: "welcome" }>;
+    expect(welcome.id).toBe("new");
+    // Simpler, GameRoom-clean design: a resumed session frees the slot and
+    // starts fresh stats/name rather than transplanting old state.
+    expect(welcome.players.find((p) => p.id === "new")?.name).toBe("Ana2");
+    expect(welcome.players.find((p) => p.id === "old")).toBeUndefined();
+  });
+
+  it("does not kick anyone for a brand-new sessionId", () => {
+    joinPlayer(c, "a", "A");
+    c.room.join("b");
+    c.room.handle("b", { t: "hello", name: "B", sessionId: "different" } as unknown as ClientMessage);
+    expect(c.disconnected).toHaveLength(0);
+    expect(c.sentTo("a", "error")).toHaveLength(0);
+  });
+
+  it("does not kick a live session when a sessionId is reused after the old owner already left", () => {
+    c.room.join("old");
+    c.room.handle("old", { t: "hello", name: "Ana", sessionId: "S1" } as unknown as ClientMessage);
+    c.room.leave("old");
+    c.disconnected.length = 0;
+    c.broadcasts.length = 0;
+
+    c.room.join("new");
+    c.room.handle("new", { t: "hello", name: "Ana2", sessionId: "S1" } as unknown as ClientMessage);
+    expect(c.disconnected).toHaveLength(0);
+    expect(c.sentTo("new", "welcome")).toHaveLength(1);
+  });
+
+  it("treats a missing sessionId as a normal anonymous join", () => {
+    joinPlayer(c, "a", "A");
+    expect(c.disconnected).toHaveLength(0);
+    expect(c.sentTo("a", "welcome")).toHaveLength(1);
+  });
+
   it("ignores messages before hello", () => {
     c.room.join("a");
     c.room.handle("a", { t: "state", motion: motion(0) });
@@ -133,6 +184,20 @@ describe("GameRoom", () => {
     const shot = c.bcast("shot").at(-1)!;
     expect(shot.except).toBe("a");
     expect((shot.msg as { hit: boolean }).hit).toBe(true);
+  });
+
+  it("broadcasts car motion with a real RGB hex color (not clamped to the position sanity range)", () => {
+    joinPlayer(c, "a");
+    c.broadcasts.length = 0;
+    // 0xc0392b (12599851) is a typical vehicle color, far above the generic
+    // "absurd value" guard used for positions/speeds — it must still pass.
+    c.room.handle("a", {
+      t: "state",
+      motion: motion(0, 0, { type: "sedan", color: 0xc0392b, yaw: 0, speed: 0, steer: 0 }),
+    });
+    c.room.tick();
+    const states = c.bcast("states")[0].msg as Extract<ServerMessage, { t: "states" }>;
+    expect(states.players[0].motion.car).toMatchObject({ type: "sedan", color: 0xc0392b });
   });
 
   it("reduces damage to 60% for players in a car", () => {
@@ -221,6 +286,53 @@ describe("GameRoom", () => {
     expect(killed).toMatchObject({ victimId: "a", killerId: null, weapon: null, cause: "vehicle" });
     const scores = c.bcast("scores").at(-1)!.msg as Extract<ServerMessage, { t: "scores" }>;
     expect(scores.players[0]).toMatchObject({ kills: 0, deaths: 1 });
+  });
+
+  it("applies ram damage scaled by speed and broadcasts health", () => {
+    joinPlayer(c, "a", "A", 0);
+    joinPlayer(c, "b", "B", 5);
+    c.room.handle("a", { t: "ram", targetId: "b", speed: 20 });
+    const health = c.bcast("health").at(-1)!.msg as Extract<ServerMessage, { t: "health" }>;
+    // threshold 6, per-unit 2.2, cap 70 => (20-6)*2.2 = 30.8 -> rounds in applyDamage? applyDamage uses raw.
+    expect(health.id).toBe("b");
+    expect(health.health).toBeLessThan(MAX_HEALTH);
+    expect(health.attackerId).toBe("a");
+  });
+
+  it("ignores ram contact at walking-pace speed (no damage)", () => {
+    joinPlayer(c, "a", "A", 0);
+    joinPlayer(c, "b", "B", 5);
+    c.room.handle("a", { t: "ram", targetId: "b", speed: 2 });
+    expect(c.bcast("health")).toHaveLength(0);
+  });
+
+  it("rate-limits ram damage between the same attacker/target pair", () => {
+    joinPlayer(c, "a", "A", 0);
+    joinPlayer(c, "b", "B", 5);
+    c.room.handle("a", { t: "ram", targetId: "b", speed: 20 });
+    c.room.handle("a", { t: "ram", targetId: "b", speed: 20 });
+    expect(c.bcast("health")).toHaveLength(1);
+    c.advance(1000);
+    c.room.handle("a", { t: "ram", targetId: "b", speed: 20 });
+    expect(c.bcast("health")).toHaveLength(2);
+  });
+
+  it("rejects ram against a target that is too far away", () => {
+    joinPlayer(c, "a", "A", 0);
+    joinPlayer(c, "b", "B", 50);
+    c.room.handle("a", { t: "ram", targetId: "b", speed: 20 });
+    expect(c.bcast("health")).toHaveLength(0);
+  });
+
+  it("rejects self-ram and ram against a dead or unknown target", () => {
+    joinPlayer(c, "a", "A", 0);
+    joinPlayer(c, "b", "B", 5);
+    c.room.handle("a", { t: "ram", targetId: "a", speed: 20 });
+    c.room.handle("a", { t: "ram", targetId: "ghost", speed: 20 });
+    c.room.handle("b", { t: "selfDamage", amount: MAX_HEALTH, cause: "fall" });
+    c.broadcasts.length = 0;
+    c.room.handle("a", { t: "ram", targetId: "b", speed: 20 });
+    expect(c.bcast("health")).toHaveLength(0);
   });
 
   it("answers ping with pong", () => {
