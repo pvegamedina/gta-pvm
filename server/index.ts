@@ -11,7 +11,10 @@ import {
 import { GameRoom } from "./room";
 import { isRecord } from "./validation";
 
-const PORT = Number(process.env.WS_PORT) || SERVER_PORT;
+// PORT is the convention used by hosting platforms (Render, Railway, Heroku…)
+// that assign it dynamically; WS_PORT is an explicit override for local/manual
+// setups, and SERVER_PORT is the shared default for local dev.
+const PORT = Number(process.env.PORT) || Number(process.env.WS_PORT) || SERVER_PORT;
 const MAX_PAYLOAD_BYTES = 16 * 1024;
 const HEARTBEAT_MS = 10_000;
 const CLIENT_TYPES = new Set(["hello", "state", "shoot", "selfDamage", "ping"]);

@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: gta-pvm-ws
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm run server
+    envVars:
+      - key: NODE_VERSION
+        value: 22
