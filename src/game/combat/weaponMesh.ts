@@ -1,14 +1,22 @@
-// Grouped low-poly weapon meshes (slide/barrel/sights for the pistol,
-// stock/handguard/carry-handle for the M4) attached to a human rig's right
-// hand, plus the arm pose used while armed/aiming. Shared by the local
-// player and remote players.
+// Held-weapon attachment for character rigs, plus the grouped low-poly
+// procedural weapon meshes (slide/barrel/sights for the pistol, stock/
+// handguard/carry-handle for the M4) and arm aim pose used by the procedural
+// human fallback. Model rigs attach the GLB weapons through the same
+// setHeldWeapon() with their own builder (see characters/modelRig.ts).
 
 import * as THREE from "three";
 import type { WeaponId } from "@shared/protocol";
 import type { HumanRig } from "../player/human";
+import { MUZZLE_NAME, type GunId } from "../characters/weaponPose";
 import { gunmetal, accentMat } from "./weaponTextures";
 
-function buildPistolMesh(): THREE.Group {
+/** Weapon model built barrel-along-+Z / sights-up-+Y, plus its grip so it can be placed in a hand. */
+interface WeaponModel {
+  group: THREE.Group;
+  grip: THREE.Object3D;
+}
+
+function buildPistolMesh(): WeaponModel {
   const g = new THREE.Group();
   const body = gunmetal(0x1c1c1e);
   const dark = accentMat(0x0c0c0d);
@@ -51,10 +59,10 @@ function buildPistolMesh(): THREE.Group {
   frontSight.position.set(0, 0.068, 0.145);
   g.add(frontSight);
 
-  return g;
+  return { group: g, grip };
 }
 
-function buildM4Mesh(): THREE.Group {
+function buildM4Mesh(): WeaponModel {
   const g = new THREE.Group();
   const body = gunmetal(0x2b2b28);
   const dark = accentMat(0x15150f);
@@ -106,26 +114,51 @@ function buildM4Mesh(): THREE.Group {
   selector.position.set(0.033, -0.01, -0.05);
   g.add(selector);
 
-  return g;
+  return { group: g, grip };
 }
 
 export interface WeaponMeshHandle {
-  group: THREE.Group;
+  group: THREE.Object3D;
   weapon: WeaponId;
 }
 
-/** Attaches the weapon mesh for `weapon` to `rig`'s right hand; removes any previous one. */
-export function setHeldWeapon(rig: HumanRig, prev: WeaponMeshHandle | null, weapon: WeaponId): WeaponMeshHandle | null {
-  if (prev) rig.rArm.children[0]?.remove(prev.group);
-  const handGroup = rig.rArm.children[0] as THREE.Object3D | undefined; // the hand mesh added in makeHuman
-  if (weapon === "fists" || !handGroup) return null;
-  const group = weapon === "pistol" ? buildPistolMesh() : buildM4Mesh();
-  group.rotation.y = Math.PI / 2;
-  handGroup.add(group);
+/** Builds a gun model already oriented/offset for the socket it will be attached to. */
+export type WeaponBuilder = (weapon: GunId) => THREE.Object3D;
+
+/** Barrel tip (model space, barrel along +Z) of each procedural gun. */
+const PROCEDURAL_MUZZLE_Z: Record<GunId, number> = { pistol: 0.195, m4: 0.53 };
+
+/** Procedural pistol/M4 positioned for the procedural human's right hand (HumanRig.rHand). */
+export function buildProceduralWeapon(weapon: GunId): THREE.Object3D {
+  const { group, grip } = weapon === "pistol" ? buildPistolMesh() : buildM4Mesh();
+  const muzzle = new THREE.Object3D();
+  muzzle.name = MUZZLE_NAME;
+  muzzle.position.set(0, weapon === "pistol" ? 0.035 : 0, PROCEDURAL_MUZZLE_Z[weapon]);
+  group.add(muzzle);
+  // The arm hangs along its local -Y (palm facing +Z), so the barrel (+Z) is
+  // turned to run along the arm and the sights (+Y) end up on top once the
+  // arm is raised to aim.
+  group.rotation.x = Math.PI / 2;
+  // Shift the model so its grip sits in the palm (the hand group's origin).
+  group.position.copy(grip.position).applyEuler(group.rotation).negate();
+  return group;
+}
+
+/** Attaches the weapon built by `build` to `socket`; removes any previous one. Fists hold nothing. */
+export function setHeldWeapon(
+  socket: THREE.Object3D,
+  prev: WeaponMeshHandle | null,
+  weapon: WeaponId,
+  build: WeaponBuilder,
+): WeaponMeshHandle | null {
+  prev?.group.removeFromParent();
+  if (weapon === "fists") return null;
+  const group = build(weapon);
+  socket.add(group);
   return { group, weapon };
 }
 
-/** Raises the arms into an aiming pose; blends back to the walk pose when not aiming/armed. */
+/** Raises the procedural human's arms into an aiming pose (no-op when not aiming/armed). */
 export function applyAimPose(rig: HumanRig, aiming: boolean, armed: boolean): void {
   if (aiming && armed) {
     rig.rArm.rotation.x = -1.55;

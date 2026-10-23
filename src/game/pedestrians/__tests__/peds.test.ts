@@ -10,7 +10,6 @@ function makePed(overrides: Partial<Ped> = {}): Ped {
     speed: 1,
     ox: 0,
     oz: 0,
-    phase: 0,
     mesh: null as unknown as Ped["mesh"],
     yaw: 0,
     state: "walk",

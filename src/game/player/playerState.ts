@@ -3,7 +3,7 @@
 import type { WeaponId } from "@shared/protocol";
 import { MAX_HEALTH, WEAPONS } from "@shared/protocol";
 import type { Vehicle } from "../vehicles/meshes";
-import type { HumanRig } from "./human";
+import type { CharacterRig } from "../characters/characterRig";
 
 export type PlayerMode = "foot" | "car";
 
@@ -27,8 +27,8 @@ export interface PlayerState {
   ground: boolean;
   mode: PlayerMode;
   car: Vehicle | null;
-  phase: number;
-  mesh: HumanRig;
+  /** Visual character (swappable once the model for our server color is known). */
+  mesh: CharacterRig;
   health: number;
   alive: boolean;
   lastDamageAt: number;
@@ -43,7 +43,7 @@ export function createAmmoState(mag: number, reserve: number): AmmoState {
   return { mag, reserve, reloading: false, reloadT: 0, fireCooldown: 0, spread: 0 };
 }
 
-export function createPlayerState(mesh: HumanRig, x: number, z: number, yaw: number): PlayerState {
+export function createPlayerState(mesh: CharacterRig, x: number, z: number, yaw: number): PlayerState {
   return {
     x,
     z,
@@ -55,7 +55,6 @@ export function createPlayerState(mesh: HumanRig, x: number, z: number, yaw: num
     ground: true,
     mode: "foot",
     car: null,
-    phase: 0,
     mesh,
     health: MAX_HEALTH,
     alive: true,

@@ -87,36 +87,8 @@ export function updateFoot(p: PlayerState, dt: number, input: FootInput, camYaw:
   }
   const spd = Math.hypot(p.vx, p.vz);
   if (spd > 0.3) p.yaw = angLerp(p.yaw, Math.atan2(p.vx, p.vz), Math.min(1, dt * 12));
-  p.phase += spd * dt * 4.5;
-  const u = p.mesh;
-  const running = input.run && spd > 3;
-  const amp = Math.min(1, spd / 3.4) * (input.run ? 1.05 : 0.6);
-  const s = Math.sin(p.phase) * amp;
-  // Running pumps the arms noticeably harder than a walk and adds a bit of
-  // outward swing (rotation.z) for a snappier, less robotic sprint pose.
-  const armMul = running ? 1.35 : 0.9;
-  if (p.ground) {
-    u.lLeg.rotation.x = s;
-    u.rLeg.rotation.x = -s;
-    if (!p.aiming) {
-      u.lArm.rotation.x = -s * armMul;
-      u.rArm.rotation.x = s * armMul;
-      const pump = running ? Math.cos(p.phase) * 0.12 : 0;
-      u.lArm.rotation.z = pump;
-      u.rArm.rotation.z = -pump;
-    }
-  } else {
-    u.lLeg.rotation.x = 0.5;
-    u.rLeg.rotation.x = -0.3;
-    if (!p.aiming) {
-      u.lArm.rotation.x = -2.4;
-      u.rArm.rotation.x = -2.4;
-      u.lArm.rotation.z = 0;
-      u.rArm.rotation.z = 0;
-    }
-  }
-  u.torso.rotation.x = running ? 0.22 : input.run && spd > 1 ? 0.08 : 0;
-  p.mesh.group.position.set(p.x, p.y + (p.ground ? Math.abs(Math.sin(p.phase)) * 0.05 * amp : 0), p.z);
+  // Limb animation is the rig's job (CharacterRig.update, driven from game.ts).
+  p.mesh.group.position.set(p.x, p.y, p.z);
   p.mesh.group.rotation.y = p.yaw;
 }
 

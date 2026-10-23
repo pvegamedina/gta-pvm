@@ -19,6 +19,8 @@ export interface HumanRig {
   rLeg: THREE.Group;
   lArm: THREE.Group;
   rArm: THREE.Group;
+  /** Right hand (child of rArm, at the end of the arm) — held weapons attach here. */
+  rHand: THREE.Group;
   torso: THREE.Mesh;
 }
 
@@ -36,11 +38,10 @@ function addLegDetail(legMesh: THREE.Mesh, shoeMat: THREE.Material, soleMat: THR
 }
 
 /**
- * Adds a wrist accent (nested inside the arm mesh — keeps that mesh's identity
- * and position intact, since weaponMesh.ts attaches weapons to it directly)
- * plus a hand (palm + thumb) as a sibling, same as the hand box this replaces.
+ * Adds a wrist accent (nested inside the arm mesh) plus a hand (palm + thumb)
+ * as a sibling of the arm mesh. Returns the hand so weapons can be held in it.
  */
-function addArmDetail(armGroup: THREE.Group, armMesh: THREE.Mesh, skin: THREE.Material): void {
+function addArmDetail(armGroup: THREE.Group, armMesh: THREE.Mesh, skin: THREE.Material): THREE.Group {
   const wrist = new THREE.Mesh(new THREE.BoxGeometry(0.135, 0.06, 0.155), skin);
   wrist.position.y = -0.26;
   armMesh.add(wrist);
@@ -53,6 +54,7 @@ function addArmDetail(armGroup: THREE.Group, armMesh: THREE.Mesh, skin: THREE.Ma
   thumb.position.set(0.09, 0.02, 0.03);
   hand.add(thumb);
   armGroup.add(hand);
+  return hand;
 }
 
 export function makeHuman(c: HumanColors): HumanRig {
@@ -117,9 +119,9 @@ export function makeHuman(c: HumanColors): HumanRig {
   const [lArm, lArmMesh] = mk(-0.3, 1.47, new THREE.BoxGeometry(0.13, 0.56, 0.15), shirt, -0.27);
   const [rArm, rArmMesh] = mk(0.3, 1.47, new THREE.BoxGeometry(0.13, 0.56, 0.15), shirt, -0.27);
   addArmDetail(lArm, lArmMesh, skin);
-  addArmDetail(rArm, rArmMesh, skin);
+  const rHand = addArmDetail(rArm, rArmMesh, skin);
 
-  return { group: g, lLeg, rLeg, lArm, rArm, torso };
+  return { group: g, lLeg, rLeg, lArm, rArm, rHand, torso };
 }
 
 export function randomPedColors(): HumanColors {

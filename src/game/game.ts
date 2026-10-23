@@ -33,7 +33,7 @@ import { visualVeh, removeVeh, type Vehicle } from "./vehicles/meshes";
 import { spawnVehicles, updateAI } from "./vehicles/traffic";
 import { updatePlayerCar } from "./vehicles/playerCar";
 
-import { makeHuman } from "./player/human";
+import type { HumanColors } from "./player/human";
 import { createPlayerState, type PlayerState } from "./player/playerState";
 import { updateFoot, footSpeed } from "./player/foot";
 import { nearestVehicle, enterCar, exitCar, forceExitCar } from "./player/enterExit";
@@ -47,7 +47,11 @@ import { tickWeapon, tryFire, tryMelee, startReload, nextWeapon, totalSpread } f
 import { applyDamage, tickRegen, respawn as respawnHealth, vehicleHitDamage, crashDamage, VEHICLE_HIT_SPEED_THRESHOLD } from "./combat/health";
 import { createEffectsSystem } from "./combat/effects";
 import { ShootableRegistry, castShot } from "./combat/shootables";
-import { setHeldWeapon, applyAimPose, type WeaponMeshHandle } from "./combat/weaponMesh";
+
+import { loadCharacterAssets } from "./assets/characterAssets";
+import { DEFAULT_CHARACTER, characterForColor, type CharacterId } from "./characters/characterChoice";
+import type { CharacterRig, RigFactory } from "./characters/characterRig";
+import { modelRigFactory, proceduralRigFactory } from "./characters/rigFactory";
 
 import { NetClient, defaultServerUrl } from "./net/client";
 import { RemotePlayerManager } from "./net/remotePlayers";
@@ -59,6 +63,10 @@ export interface GameHandle {
 }
 
 const $ = (id: string) => document.getElementById(id);
+
+/** Procedural-fallback look of the local player (the model rig ignores it). */
+const PLAYER_COLORS: HumanColors = { skin: 0xe0ac84, shirt: 0xd9442b, pants: 0x2b3a55, hair: 0x2a1c14, shoe: 0xf0f0f0 };
+const PED_COUNT = 32;
 
 function loadName(): string {
   try {
@@ -135,16 +143,48 @@ export function createGame(): GameHandle {
   spawnVehicles(scene, vehicles, city);
   for (const v of vehicles) shootables.add(v.root, { kind: "vehicle", refId: v });
 
-  let peds: Ped[] = spawnPeds(scene, 32);
-  for (const p of peds) shootables.add(p.mesh.group, { kind: "ped", refId: p });
+  // ---------------- Characters ----------------
+  // Character models load asynchronously (see Boot below). Until then rigs are
+  // built procedurally; "Jugar" stays disabled, peds are spawned and remote
+  // players get their rigs once the final factory is known.
+  let rigFactory: RigFactory = proceduralRigFactory;
+  let assetsReady = false;
+  let disposed = false;
+  /** Our model: derived from the server-assigned color once `welcome` arrives. */
+  let localCharacter: CharacterId = DEFAULT_CHARACTER;
+  let peds: Ped[] = [];
 
-  const playerMesh = makeHuman({ skin: 0xe0ac84, shirt: 0xd9442b, pants: 0x2b3a55, hair: 0x2a1c14, shoe: 0xf0f0f0 });
-  playerMesh.group.traverse((o) => {
-    if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = true;
-  });
-  scene.add(playerMesh.group);
-  const player: PlayerState = createPlayerState(playerMesh, 21, 10.2, 2.3);
-  let heldWeaponMesh: WeaponMeshHandle | null = null;
+  const player: PlayerState = createPlayerState(rigFactory({ character: localCharacter, colors: PLAYER_COLORS, castShadow: true }), 21, 10.2, 2.3);
+  scene.add(player.mesh.group);
+
+  /** Replaces the local player's rig, keeping its transform/visibility (the rig re-attaches the held weapon on its next update). */
+  function setPlayerRig(rig: CharacterRig): void {
+    const old = player.mesh;
+    rig.group.position.copy(old.group.position);
+    rig.group.rotation.copy(old.group.rotation);
+    rig.group.visible = old.group.visible;
+    old.dispose();
+    scene.add(rig.group);
+    player.mesh = rig;
+  }
+
+  function rebuildPlayerRig(): void {
+    setPlayerRig(rigFactory({ character: localCharacter, colors: PLAYER_COLORS, castShadow: true }));
+  }
+
+  function despawnPeds(): void {
+    for (const p of peds) {
+      shootables.remove(p.mesh.group);
+      p.mesh.dispose();
+    }
+    peds = [];
+  }
+
+  function respawnPeds(): void {
+    despawnPeds();
+    peds = spawnPeds(scene, PED_COUNT, rigFactory);
+    for (const p of peds) shootables.add(p.mesh.group, { kind: "ped", refId: p });
+  }
 
   const cam = createCameraState(2.3);
   const audio = createAudioSystem();
@@ -195,6 +235,13 @@ export function createGame(): GameHandle {
       case "welcome": {
         myId = msg.id;
         pendingSpawn = msg.spawn;
+        // Same color -> character mapping as every other client uses for us.
+        const me = msg.players.find((p) => p.id === msg.id);
+        const character = characterForColor(me?.color);
+        if (character !== localCharacter) {
+          localCharacter = character;
+          if (assetsReady) rebuildPlayerRig();
+        }
         // msg.players includes this client's own snapshot — skip it, it is
         // not a remote player.
         for (const p of msg.players) {
@@ -217,11 +264,16 @@ export function createGame(): GameHandle {
         break;
       case "shot": {
         if (msg.shooterId === myId) break;
+        remotePlayers.notifyAttack(msg.shooterId, msg.weapon);
         const origin = new THREE.Vector3(msg.origin[0], msg.origin[1], msg.origin[2]);
         const end = new THREE.Vector3(msg.end[0], msg.end[1], msg.end[2]);
-        effects.muzzleFlash(origin);
-        effects.tracer(origin, end);
-        if (msg.hit) effects.impactSpark(end);
+        if (msg.weapon !== "fists") {
+          // Visual only: the bullet leaves the shooter's gun (when its model is
+          // known) and sparks on arrival; damage was already resolved server-side.
+          const muzzle = remotePlayers.muzzleWorldPosition(msg.shooterId, new THREE.Vector3()) ?? origin;
+          effects.muzzleFlash(muzzle, msg.weapon);
+          effects.bullet(muzzle, end, msg.weapon, msg.hit);
+        }
         const dist = origin.distanceTo(camera.position);
         effects.gunshot(msg.weapon, dist);
         break;
@@ -370,12 +422,7 @@ export function createGame(): GameHandle {
     vehicles.length = 0;
     spawnVehicles(scene, vehicles, city);
     for (const v of vehicles) shootables.add(v.root, { kind: "vehicle", refId: v });
-    for (const p of peds) {
-      scene.remove(p.mesh.group);
-      shootables.remove(p.mesh.group);
-    }
-    peds = spawnPeds(scene, 32);
-    for (const p of peds) shootables.add(p.mesh.group, { kind: "ped", refId: p });
+    respawnPeds();
     player.mesh.group.position.set(player.x, player.y, player.z);
     player.mesh.group.rotation.set(0, player.yaw, 0);
     cam.yaw = player.yaw;
@@ -386,6 +433,7 @@ export function createGame(): GameHandle {
   }
 
   function startGame(): void {
+    if (!assetsReady) return;
     audio.init();
     if (audio.ctx && audio.ctx.resume) audio.ctx.resume();
     const nm = (nameInput?.value || "").trim().slice(0, MAX_NAME_LENGTH);
@@ -434,9 +482,8 @@ export function createGame(): GameHandle {
   }
 
   function switchWeapon(w: WeaponId): void {
-    if (player.weapon === w) return;
+    // The rig picks the new weapon model up on its next update.
     player.weapon = w;
-    heldWeaponMesh = setHeldWeapon(player.mesh, heldWeaponMesh, w);
   }
 
   // ---------------- Combat ----------------
@@ -447,6 +494,7 @@ export function createGame(): GameHandle {
     if (id === "fists") {
       const ammo = player.ammo.fists;
       if (!tryMelee(ammo, WEAPONS.fists)) return;
+      player.mesh.triggerAttack("fists");
       const dir = camera.getWorldDirection(new THREE.Vector3());
       const origin = camera.position.clone();
       const res = castShot(origin, dir, WEAPONS.fists.range, shootables, 0.3, camera);
@@ -471,6 +519,7 @@ export function createGame(): GameHandle {
       return;
     }
     if (!result.fired) return;
+    player.mesh.triggerAttack(id);
     const dir = camera.getWorldDirection(new THREE.Vector3());
     const spread = totalSpread(spec, ammo);
     if (spread > 0) {
@@ -481,17 +530,19 @@ export function createGame(): GameHandle {
     }
     const origin = camera.position.clone();
     const res = castShot(origin, dir, spec.range, shootables, 0.3, camera);
-    // Camera near plane is 0.5 — place the flash sprite past it or it gets
-    // clipped and never renders.
-    effects.muzzleFlash(origin.clone().addScaledVector(dir, 1.2));
-    effects.tracer(origin, res.point);
+    // Visual bullet from the gun's muzzle to the hitscan point (impact spark
+    // when it arrives). Without a muzzle (rig not ready) fall back to a point
+    // in front of the camera — past its 0.5 near plane so the flash renders.
+    const muzzle = new THREE.Vector3();
+    if (!player.mesh.muzzleWorldPosition(muzzle)) muzzle.copy(origin).addScaledVector(dir, 1.2);
+    effects.muzzleFlash(muzzle, id);
+    effects.bullet(muzzle, res.point, id, res.hit !== null);
     effects.gunshot(id, 0);
     cam.shake = Math.min(1, cam.shake + (id === "m4" ? 0.08 : 0.12));
     let targetId: string | null = null;
     let hitSomething = false;
     if (res.hit) {
       hitSomething = true;
-      effects.impactSpark(res.point);
       if (res.hit.kind === "ped") {
         hitPed(res.hit.refId as Ped);
         spookPedsNear(peds, res.point.x, res.point.z, 14);
@@ -646,7 +697,9 @@ export function createGame(): GameHandle {
         const fw = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
         const st = (keys.KeyA || keys.ArrowLeft ? 1 : 0) - (keys.KeyD || keys.ArrowRight ? 1 : 0);
         updateFoot(player, dt, { forward: fw, strafe: st, run: !!(keys.ShiftLeft || keys.ShiftRight), jump: !!keys.Space }, cam.yaw, grid, vehicles);
-        if (player.aiming) player.yaw = cam.yaw;
+        // Face the camera while aiming or firing a gun, so the gun (and the
+        // visible bullets leaving its muzzle) point where the shot goes.
+        if (player.aiming || (firingHeld && player.weapon !== "fists")) player.yaw = cam.yaw;
         checkVehicleHit(dt);
       } else if (player.car) {
         const input = { up: !!(keys.KeyW || keys.ArrowUp), down: !!(keys.KeyS || keys.ArrowDown), left: !!(keys.KeyA || keys.ArrowLeft), right: !!(keys.KeyD || keys.ArrowRight), handbrake: !!keys.Space };
@@ -674,9 +727,6 @@ export function createGame(): GameHandle {
         // it never touches the driver's own health (only crashDamage above does).
         checkCarRam();
       }
-    } else {
-      // Ragdoll-ish fall while dead.
-      player.mesh.group.rotation.x += (Math.PI / 2 - player.mesh.group.rotation.x) * Math.min(1, dt * 4);
     }
     tickRegen(player, dt, tClock);
     tickWeapon(player.ammo[player.weapon], WEAPONS[player.weapon], dt);
@@ -799,7 +849,6 @@ export function createGame(): GameHandle {
           fireEdgeConsumed = true;
         }
       }
-      applyAimPose(player.mesh, player.aiming, player.weapon !== "fists");
 
       acc += dt;
       let n = 0;
@@ -810,10 +859,19 @@ export function createGame(): GameHandle {
       }
       if (n === 6) acc = 0;
 
+      if (player.mode === "foot") {
+        player.mesh.update(dt, {
+          speed: player.alive ? footSpeed(player) : 0,
+          ground: player.ground,
+          weapon: player.weapon,
+          aiming: player.aiming,
+          alive: player.alive,
+        });
+      }
       updateCamera(cam, camera, player, dt, tClock, grid);
       env.update(dt, cam.fx, cam.fz, camera);
       effects.update(dt);
-      remotePlayers.update(env.state.nightF);
+      remotePlayers.update(dt, env.state.nightF);
       updateHud(dt);
       updateAudioFx();
 
@@ -891,10 +949,40 @@ export function createGame(): GameHandle {
   signals.update(env.state.tod);
   rafId = requestAnimationFrame(frame);
 
+  // The attract camera renders right away; "Jugar" waits for the character
+  // models. A failed load falls back to the procedural humans.
+  const playLabel = btnPlay?.textContent ?? "Jugar";
+  function setPlayLoading(loading: boolean): void {
+    if (!(btnPlay instanceof HTMLButtonElement)) return;
+    btnPlay.disabled = loading;
+    btnPlay.textContent = loading ? "Cargando personajes…" : playLabel;
+  }
+  setPlayLoading(true);
+  loadCharacterAssets()
+    .then((assets) => modelRigFactory(assets))
+    .catch((err: unknown) => {
+      console.warn("[assets] character models failed to load, using procedural humans", err);
+      return proceduralRigFactory;
+    })
+    .then((factory) => {
+      if (disposed) return;
+      rigFactory = factory;
+      assetsReady = true;
+      rebuildPlayerRig();
+      remotePlayers.setRigFactory(factory);
+      respawnPeds();
+      setPlayLoading(false);
+    });
+
   return {
     dispose() {
+      disposed = true;
       cancelAnimationFrame(rafId);
       net.close();
+      player.mesh.dispose();
+      despawnPeds();
+      remotePlayers.dispose();
+      effects.dispose();
       btnPlay?.removeEventListener("click", onPlayClick);
       btnPause?.removeEventListener("click", onPauseClick);
       btnResume?.removeEventListener("click", onResumeClick);

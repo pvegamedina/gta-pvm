@@ -1,13 +1,15 @@
-// Remote player rendering: human mesh (foot) or vehicle mesh (in a car), name
-// tag + health bar sprites, snapshot-interpolated motion, weapon/aim pose, and
-// minimap dots. Scoreboard (kills/deaths/ping) is tracked alongside.
+// Remote player rendering: animated character rig (foot) or vehicle mesh (in
+// a car), name tag + health bar sprites, snapshot-interpolated motion, weapon/
+// aim/death animation, and minimap dots. Scoreboard (kills/deaths/ping) is
+// tracked alongside. The character model is derived from the server-assigned
+// color, so every client shows the same model for the same player.
 
 import * as THREE from "three";
-import type { PlayerMotion, PlayerSnapshot } from "@shared/protocol";
-import { makeHuman, type HumanRig } from "../player/human";
+import type { PlayerMotion, PlayerSnapshot, WeaponId } from "@shared/protocol";
 import { addVeh, removeVeh, visualVeh, type Vehicle } from "../vehicles/meshes";
 import type { VehicleTypeKey } from "../vehicles/types";
-import { setHeldWeapon, applyAimPose, type WeaponMeshHandle } from "../combat/weaponMesh";
+import { characterForColor } from "../characters/characterChoice";
+import type { CharacterRig, RigFactory } from "../characters/characterRig";
 import { InterpolationBuffer } from "./interpolation";
 import { ShootableRegistry } from "../combat/shootables";
 
@@ -21,9 +23,9 @@ export interface RemotePlayer {
   deaths: number;
   ping: number;
   buffer: InterpolationBuffer;
-  humanRig: HumanRig;
+  /** null until character assets are ready (see RemotePlayerManager.setRigFactory). */
+  rig: CharacterRig | null;
   car: Vehicle | null;
-  weaponHandle: WeaponMeshHandle | null;
   nameSprite: THREE.Sprite;
   healthSprite: THREE.Sprite;
   lastMotion: PlayerMotion | null;
@@ -79,13 +81,47 @@ function drawHealthBar(spr: THREE.Sprite, health: number): void {
   tex.needsUpdate = true;
 }
 
+/** Name tag / health bar heights above the feet (character models are ~1.85 m tall). */
+const NAME_TAG_Y = 2.3;
+const HEALTH_BAR_Y = 2.05;
+
 export class RemotePlayerManager {
   private players = new Map<string, RemotePlayer>();
+  private rigFactory: RigFactory | null = null;
 
   constructor(
     private scene: THREE.Scene,
     private shootables: ShootableRegistry,
   ) {}
+
+  /** Sets how character rigs are built and (re)creates rigs for players that joined before it was known. */
+  setRigFactory(factory: RigFactory): void {
+    this.rigFactory = factory;
+    for (const rp of this.players.values()) {
+      this.detachRig(rp);
+      this.attachRig(rp);
+    }
+  }
+
+  private attachRig(rp: RemotePlayer): void {
+    if (!this.rigFactory) return;
+    const rig = this.rigFactory({
+      character: characterForColor(rp.color),
+      colors: { skin: 0xe0ac84, shirt: rp.color, pants: 0x2b3a55, hair: 0x2a1c14, shoe: 0xf0f0f0 },
+      castShadow: true,
+    });
+    rig.group.add(rp.nameSprite, rp.healthSprite);
+    this.scene.add(rig.group);
+    this.shootables.add(rig.group, { kind: "remotePlayer", refId: rp.id });
+    rp.rig = rig;
+  }
+
+  private detachRig(rp: RemotePlayer): void {
+    if (!rp.rig) return;
+    this.shootables.remove(rp.rig.group);
+    rp.rig.dispose();
+    rp.rig = null;
+  }
 
   all(): RemotePlayer[] {
     return Array.from(this.players.values());
@@ -97,18 +133,10 @@ export class RemotePlayerManager {
 
   add(snapshot: PlayerSnapshot): void {
     if (this.players.has(snapshot.id)) return;
-    const humanRig = makeHuman({ skin: 0xe0ac84, shirt: snapshot.color, pants: 0x2b3a55, hair: 0x2a1c14, shoe: 0xf0f0f0 });
-    humanRig.group.traverse((o) => {
-      if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = true;
-    });
-    this.scene.add(humanRig.group);
-    this.shootables.add(humanRig.group, { kind: "remotePlayer", refId: snapshot.id });
     const nameSprite = makeLabelSprite(snapshot.name, colorToCss(snapshot.color));
-    nameSprite.position.set(0, 2.25, 0);
-    humanRig.group.add(nameSprite);
+    nameSprite.position.set(0, NAME_TAG_Y, 0);
     const healthSprite = makeHealthSprite();
-    healthSprite.position.set(0, 2.0, 0);
-    humanRig.group.add(healthSprite);
+    healthSprite.position.set(0, HEALTH_BAR_Y, 0);
     const rp: RemotePlayer = {
       id: snapshot.id,
       name: snapshot.name,
@@ -119,22 +147,21 @@ export class RemotePlayerManager {
       deaths: snapshot.deaths,
       ping: 0,
       buffer: new InterpolationBuffer(),
-      humanRig,
+      rig: null,
       car: null,
-      weaponHandle: null,
       nameSprite,
       healthSprite,
       lastMotion: snapshot.motion,
     };
     this.players.set(snapshot.id, rp);
+    this.attachRig(rp);
     if (snapshot.motion) rp.buffer.push(snapshot.motion, performance.now());
   }
 
   remove(id: string): void {
     const rp = this.players.get(id);
     if (!rp) return;
-    this.scene.remove(rp.humanRig.group);
-    this.shootables.remove(rp.humanRig.group);
+    this.detachRig(rp);
     if (rp.car) {
       this.shootables.remove(rp.car.root);
       removeVeh(this.scene, rp.car);
@@ -166,13 +193,29 @@ export class RemotePlayerManager {
     }
   }
 
+  /** A remote player fired/punched (from a "shot" broadcast): plays the matching animation. */
+  notifyAttack(id: string, weapon: WeaponId): void {
+    this.players.get(id)?.rig?.triggerAttack(weapon);
+  }
+
+  /** World position of a remote player's gun muzzle (into `out`), or null when unknown. */
+  muzzleWorldPosition(id: string, out: THREE.Vector3): THREE.Vector3 | null {
+    const rig = this.players.get(id)?.rig;
+    return rig && rig.group.visible && rig.muzzleWorldPosition(out) ? out : null;
+  }
+
+  /** Removes every remote player (rigs, cars, shootables). */
+  dispose(): void {
+    for (const id of Array.from(this.players.keys())) this.remove(id);
+  }
+
   setPing(id: string, ping: number): void {
     const rp = this.players.get(id);
     if (rp) rp.ping = ping;
   }
 
-  /** Interpolates + applies motion to each remote player's mesh (human or car). */
-  update(nightF: number): void {
+  /** Interpolates + applies motion to each remote player's mesh (character or car). */
+  update(dt: number, nightF: number): void {
     const now = performance.now();
     for (const rp of this.players.values()) {
       drawHealthBar(rp.healthSprite, rp.alive ? rp.health : 0);
@@ -189,7 +232,7 @@ export class RemotePlayerManager {
           rp.car.ai = null;
           this.shootables.add(rp.car.root, { kind: "remoteCar", refId: rp.id });
         }
-        rp.humanRig.group.visible = false;
+        if (rp.rig) rp.rig.group.visible = false;
         rp.car.root.visible = true;
         rp.car.x = motion.p[0];
         rp.car.y = motion.p[1];
@@ -202,20 +245,18 @@ export class RemotePlayerManager {
         if (rp.car) {
           rp.car.root.visible = false;
         }
-        rp.humanRig.group.visible = true;
-        rp.humanRig.group.position.set(motion.p[0], motion.p[1], motion.p[2]);
-        rp.humanRig.group.rotation.y = motion.yaw;
-        const amp = Math.min(1, motion.speed / 3.4) * 0.7;
-        const phase = (now / 1000) * motion.speed * 4.5;
-        const s = Math.sin(phase) * amp;
-        if (motion.ground) {
-          rp.humanRig.lLeg.rotation.x = s;
-          rp.humanRig.rLeg.rotation.x = -s;
-        }
-        if (rp.weaponHandle?.weapon !== motion.weapon) {
-          rp.weaponHandle = setHeldWeapon(rp.humanRig, rp.weaponHandle, motion.weapon);
-        }
-        applyAimPose(rp.humanRig, motion.aiming, motion.weapon !== "fists");
+        const rig = rp.rig;
+        if (!rig) continue;
+        rig.group.visible = true;
+        rig.group.position.set(motion.p[0], motion.p[1], motion.p[2]);
+        rig.group.rotation.y = motion.yaw;
+        rig.update(dt, {
+          speed: rp.alive ? motion.speed : 0,
+          ground: motion.ground,
+          weapon: motion.weapon,
+          aiming: motion.aiming,
+          alive: rp.alive,
+        });
       }
     }
   }

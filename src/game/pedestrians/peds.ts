@@ -1,10 +1,13 @@
 // Pedestrians: wander on a per-block sidewalk ring, dodge nearby fast traffic
-// and the on-foot player, flee from gunfire, and fall/respawn when shot.
+// and the on-foot player, flee from gunfire (run cycle), and play their death
+// animation then respawn when shot.
 
 import * as THREE from "three";
 import { G, bc } from "../core/constants";
 import { angLerp } from "../core/math";
-import { makeHuman, randomPedColors, type HumanRig } from "../player/human";
+import { randomPedColors } from "../player/human";
+import { randomCharacter } from "../characters/characterChoice";
+import type { CharacterRig, RigFactory, RigUpdate } from "../characters/characterRig";
 import type { Vehicle } from "../vehicles/meshes";
 
 export interface Ped {
@@ -15,8 +18,7 @@ export interface Ped {
   speed: number;
   ox: number;
   oz: number;
-  phase: number;
-  mesh: HumanRig;
+  mesh: CharacterRig;
   yaw: number;
   state: "walk" | "down";
   downT: number;
@@ -49,10 +51,11 @@ function ringPos(bi: number, bj: number, s: number, out: { x: number; z: number 
   }
 }
 
-export function spawnPeds(scene: THREE.Scene, n: number): Ped[] {
+/** Pedestrians are local-only, so Math.random() picks their look freely. */
+export function spawnPeds(scene: THREE.Scene, n: number, makeRig: RigFactory): Ped[] {
   const peds: Ped[] = [];
   for (let i = 0; i < n; i++) {
-    const mesh = makeHuman(randomPedColors());
+    const mesh = makeRig({ character: randomCharacter(), colors: randomPedColors(), castShadow: false });
     scene.add(mesh.group);
     peds.push({
       bi: Math.floor(Math.random() * G),
@@ -62,7 +65,6 @@ export function spawnPeds(scene: THREE.Scene, n: number): Ped[] {
       speed: (1.1 + Math.random() * 0.6) * (0.8 + Math.random() * 0.4),
       ox: 0,
       oz: 0,
-      phase: Math.random() * 6,
       mesh,
       yaw: 0,
       state: "walk",
@@ -81,8 +83,9 @@ function respawnPed(scene: THREE.Scene, p: Ped): void {
   p.downT = 0;
   p.ox = p.oz = 0;
   p.mesh.group.visible = true;
-  p.mesh.group.rotation.set(0, 0, 0);
 }
+
+const _anim: RigUpdate = { speed: 0, ground: true, weapon: "fists", aiming: false, alive: true, running: false };
 
 const _p1 = { x: 0, z: 0 };
 const _p2 = { x: 0, z: 0 };
@@ -100,6 +103,10 @@ export function updatePeds(
     if (p.state === "down") {
       p.downT += dt;
       if (p.downT > DOWN_RESPAWN_S * 0.4) p.mesh.group.visible = false;
+      else {
+        _anim.alive = false;
+        p.mesh.update(dt, _anim);
+      }
       if (p.downT > DOWN_RESPAWN_S) respawnPed(scene, p);
       continue;
     }
@@ -135,15 +142,13 @@ export function updatePeds(
     }
     p.ox *= Math.exp(-dt * 0.8);
     p.oz *= Math.exp(-dt * 0.8);
-    p.phase += p.speed * dt * 4.5;
     p.yaw = angLerp(p.yaw, Math.atan2(_p2.x - _p1.x, _p2.z - _p1.z), Math.min(1, dt * 8));
     p.mesh.group.position.set(_p1.x + p.ox, 0.25, _p1.z + p.oz);
     p.mesh.group.rotation.y = p.yaw;
-    const s = Math.sin(p.phase) * 0.55;
-    p.mesh.lLeg.rotation.x = s;
-    p.mesh.rLeg.rotation.x = -s;
-    p.mesh.lArm.rotation.x = -s * 0.9;
-    p.mesh.rArm.rotation.x = s * 0.9;
+    _anim.alive = true;
+    _anim.speed = p.speed * fleeMul;
+    _anim.running = p.fleeT > 0;
+    p.mesh.update(dt, _anim);
   }
 }
 
@@ -157,12 +162,11 @@ export function pedPosition(p: Ped): { x: number; z: number } {
   return out;
 }
 
-/** Ped takes a hit: falls over, starts the respawn timer, and nearby peds flee. */
+/** Ped takes a hit: plays its death (see updatePeds) and starts the respawn timer. */
 export function hitPed(p: Ped): void {
   if (p.state === "down") return;
   p.state = "down";
   p.downT = 0;
-  p.mesh.group.rotation.x = Math.PI / 2;
 }
 
 export function spookPedsNear(peds: Ped[], x: number, z: number, radius: number): void {
