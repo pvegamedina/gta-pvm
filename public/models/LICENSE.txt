@@ -1,4 +1,4 @@
 3D models by Quaternius (https://quaternius.com) — CC0 1.0 Universal (public domain).
 - characters/*.glb: "Ultimate Modular Men Pack" (individual characters, with animations)
-- weapons/pistol.glb (Pistol_1), weapons/rifle.glb (AR_1): "Sci-Fi Modular Gun Pack"
-Converted from glTF with gltf-transform (meshopt compression, requires MeshoptDecoder).
+- weapons/pistol.glb (Pistol_5), weapons/rifle.glb (AssaultRifle2_1): "Ultimate Gun Pack"
+Converted with obj2gltf / gltf-transform (meshopt compression, requires MeshoptDecoder).
