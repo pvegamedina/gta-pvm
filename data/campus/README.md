@@ -14,3 +14,16 @@ Overpass query:
 ```
 
 GeoTIFF facts: 293 × 257 px, pixel ≈ 4.505e-5° lon × 4.514e-5° lat, tiepoint (-6.9299, 37.2763) top-left, values 2–32 m.
+
+## Build
+
+```bash
+npm run map:build                                 # → public/maps/campus-el-carmen.json (deterministic)
+npx tsx scripts/map/preview.ts <out.svg>          # optional top-down debug render (SVG + PNG via system Chrome)
+```
+
+The pipeline (`scripts/map/`) projects everything to local metres (x = east, z = south, origin
+37.27055 N, -6.9233 E), smooths and resamples the DEM to a 4 m int16-decimetre grid, and extracts
+buildings, roads + car/pedestrian graphs, landuse, trees, spawn points and traffic-light junctions.
+The file schema lives in `src/game/map/types.ts`; load it with `parseCampusMap` (`src/game/map/loader.ts`).
+Both attribution strings are embedded in the generated file and must be shown in the game.

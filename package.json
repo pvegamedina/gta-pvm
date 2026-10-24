@@ -9,7 +9,8 @@
     "start": "concurrently -k -n web,ws -c cyan,magenta \"next start\" \"tsx server/index.ts\"",
     "server": "tsx server/index.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "map:build": "tsx scripts/map/build.ts"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "0.21.0",
@@ -26,6 +27,7 @@
     "@types/three": "^0.186.0",
     "@types/ws": "^8.18.2",
     "concurrently": "^10.0.6",
+    "geotiff": "3.0.5",
     "playwright-core": "^1.64.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
