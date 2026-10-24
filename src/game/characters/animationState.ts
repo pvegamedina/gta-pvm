@@ -6,7 +6,7 @@
 // AnimationActions every frame.
 
 import type { WeaponId } from "@shared/protocol";
-import { DwellFlag, RUN_FULL_SPEED, damp, gaitRate, locomotionWeights, oneShotWeight, smoothstep } from "./animationBlend";
+import { DwellFlag, RUN_FULL_SPEED, damp, gaitRate, leanFromAccel, locomotionWeights, oneShotWeight, smoothstep } from "./animationBlend";
 
 /** Subset of the embedded clips (identical names in every character GLB) that gameplay uses. */
 export type ClipName =
@@ -60,6 +60,8 @@ const ONE_SHOT_FADE_IN = 0.12;
 const ONE_SHOT_FADE_OUT = 0.15;
 const DEATH_FADE_IN = 0.25;
 const DEATH_FADE_OUT = 0.35;
+/** Start/stop lean smoothing (on top of the already smoothed speed). */
+const LEAN_TAU = 0.12;
 /** Recoil overlay only while (nearly) standing still; Run_Shoot covers moving. */
 const RECOIL_MAX_SPEED = 0.6;
 
@@ -87,6 +89,7 @@ export class CharacterAnimState {
   private runBoost = 0;
   private armedW = 0;
   private aimW = 0;
+  private leanAngle = 0;
   private deathRamp = 0;
   private deathTime = 0;
   private wasAlive = true;
@@ -149,7 +152,11 @@ export class CharacterAnimState {
     this.armedW = damp(this.armedW, armed ? 1 : 0, POSE_TAU, dt);
     this.aimW = damp(this.aimW, armed && (aiming || this.shotHold > 0) ? 1 : 0, POSE_TAU, dt);
     // Frozen while dead: Death covers the body, and respawn eases from there.
+    const prevSpeed = this.speed;
     if (input.alive) this.speed = damp(this.speed, Math.max(0, input.speed), SPEED_TAU, dt);
+    // Start/stop lean from the smoothed acceleration (upright while dead).
+    const accel = dt > 0 ? (this.speed - prevSpeed) / dt : 0;
+    this.leanAngle = damp(this.leanAngle, input.alive ? leanFromAccel(accel) : 0, LEAN_TAU, dt);
     this.runBoost = damp(this.runBoost, input.running ? 1 : 0, POSE_TAU * 2, dt);
 
     // ---- clocks ----
@@ -186,6 +193,21 @@ export class CharacterAnimState {
 
   weight(clip: ClipName): number {
     return this.weights.get(clip) ?? 0;
+  }
+
+  /** Upper-body pitch (rad, + = forward) from accelerating/braking; rigs add it on the spine. */
+  get lean(): number {
+    return this.leanAngle;
+  }
+
+  /** Smoothed "holding a gun" factor (0..1), faded out by death: drives the two-handed carry. */
+  get armedWeight(): number {
+    return this.armedW * (1 - smoothstep(0, 1, this.deathRamp));
+  }
+
+  /** Smoothed aiming factor (0..1, includes the brief hip-fire raise), faded out by death. */
+  get aimWeight(): number {
+    return Math.min(1, this.aimW) * (1 - smoothstep(0, 1, this.deathRamp));
   }
 
   /** Time (s) within `clip` to display this frame. */

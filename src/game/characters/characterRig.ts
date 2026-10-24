@@ -18,6 +18,8 @@ export interface RigUpdate {
   alive: boolean;
   /** Forces the run cycle (fleeing pedestrians). */
   running?: boolean;
+  /** Aim pitch (rad, + = up) the gun levels at while aiming; 0 when unknown. */
+  aimPitch?: number;
 }
 
 export interface CharacterRig {

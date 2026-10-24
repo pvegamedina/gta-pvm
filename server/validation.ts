@@ -63,7 +63,10 @@ export function parseMotion(v: unknown): PlayerMotion | null {
   if (!sane(v.yaw) || !sane(v.speed)) return null;
   if (typeof v.ground !== "boolean" || typeof v.aiming !== "boolean") return null;
   if (!isWeaponId(v.weapon)) return null;
-  return { p, yaw: v.yaw, speed: v.speed, ground: v.ground, weapon: v.weapon, aiming: v.aiming, car };
+  const motion: PlayerMotion = { p, yaw: v.yaw, speed: v.speed, ground: v.ground, weapon: v.weapon, aiming: v.aiming, car };
+  // Optional aim pitch: kept when sane (clamped to straight up/down), otherwise dropped.
+  if (sane(v.aimPitch)) motion.aimPitch = clamp(v.aimPitch, Math.PI / 2);
+  return motion;
 }
 
 /** A known character id, or null for anything else (unknown string, wrong type). */

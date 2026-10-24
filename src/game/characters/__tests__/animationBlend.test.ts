@@ -1,5 +1,18 @@
 import { describe, it, expect } from "vitest";
-import { damp, locomotionWeights, gaitRate, oneShotWeight, DwellFlag, WALK_FULL_SPEED, RUN_FULL_SPEED } from "../animationBlend";
+import {
+  damp,
+  locomotionWeights,
+  gaitRate,
+  oneShotWeight,
+  leanFromAccel,
+  DwellFlag,
+  WALK_FULL_SPEED,
+  RUN_FULL_SPEED,
+  WALK_STRIDE,
+  RUN_STRIDE,
+  MAX_LEAN,
+} from "../animationBlend";
+import { FOOT_TUNING } from "../../player/footMotion";
 
 describe("damp", () => {
   it("converges to the target", () => {
@@ -60,6 +73,49 @@ describe("gaitRate", () => {
     for (let s = 0; s <= 8; s += 0.01) {
       expect(Math.abs(gaitRate(s + 1e-3) - gaitRate(s))).toBeLessThan(0.01);
     }
+  });
+});
+
+describe("locomotion thresholds vs. the player's speeds", () => {
+  it("shows a pure walk at cruising speed and a pure run when sprinting", () => {
+    expect(locomotionWeights(FOOT_TUNING.walkSpeed).walk).toBeCloseTo(1, 9);
+    expect(locomotionWeights(FOOT_TUNING.runSpeed).run).toBeCloseTo(1, 9);
+  });
+
+  it("spreads the walk -> run crossfade over the sprint build-up", () => {
+    // Speeds strictly between walk and sprint are a mix of both clips.
+    const mid = locomotionWeights((FOOT_TUNING.walkSpeed + FOOT_TUNING.runSpeed) / 2);
+    expect(mid.walk).toBeGreaterThan(0.05);
+    expect(mid.run).toBeGreaterThan(0.05);
+  });
+});
+
+describe("gaitRate stride matching", () => {
+  it("advances the cycle exactly one stride per stride length travelled (no foot sliding)", () => {
+    expect(gaitRate(FOOT_TUNING.walkSpeed) * WALK_STRIDE).toBeCloseTo(FOOT_TUNING.walkSpeed, 6);
+    expect(gaitRate(FOOT_TUNING.runSpeed) * RUN_STRIDE).toBeCloseTo(FOOT_TUNING.runSpeed, 6);
+    expect(gaitRate(1.4) * WALK_STRIDE).toBeCloseTo(1.4, 6);
+  });
+
+  it("keeps playback within a believable tempo at the extremes", () => {
+    expect(gaitRate(0)).toBeGreaterThan(0.3);
+    expect(gaitRate(20)).toBeLessThan(3);
+  });
+});
+
+describe("leanFromAccel", () => {
+  it("leans forward when speeding up, back when braking, upright when steady", () => {
+    expect(leanFromAccel(0)).toBe(0);
+    expect(leanFromAccel(4)).toBeGreaterThan(0);
+    expect(leanFromAccel(-4)).toBeLessThan(0);
+    expect(leanFromAccel(-3)).toBeCloseTo(-leanFromAccel(3), 12);
+  });
+
+  it("is monotonic and saturates at MAX_LEAN (subtle)", () => {
+    for (let a = -30; a < 30; a += 0.1) expect(leanFromAccel(a + 0.1)).toBeGreaterThanOrEqual(leanFromAccel(a));
+    expect(leanFromAccel(100)).toBeCloseTo(MAX_LEAN, 9);
+    expect(leanFromAccel(-100)).toBeCloseTo(-MAX_LEAN, 9);
+    expect(MAX_LEAN).toBeLessThan(0.25);
   });
 });
 

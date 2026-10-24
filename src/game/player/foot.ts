@@ -1,11 +1,16 @@
 // On-foot movement: WASD relative to camera yaw, running, jumping, and
 // collision resolution against static colliders and parked/AI vehicles.
+// Velocity is inertial (player/footMotion.ts): walking ramps up, Shift builds
+// up to a sprint over ~1 s, stops slide out briefly and turns arc. Collisions
+// remove the velocity component pushing into whatever was hit, so the
+// character slides along walls instead of "running in place" against them.
 
 import { angLerp, clamp } from "../core/math";
 import { LIMIT } from "../core/constants";
 import { circleVsCollider, groundY, type CollisionGrid, type HitInfo } from "../world/colliders";
 import type { Vehicle } from "../vehicles/meshes";
 import type { PlayerState } from "./playerState";
+import { stepFootVelocity, type FootMoveInput } from "./footMotion";
 
 export interface FootInput {
   forward: number;
@@ -52,6 +57,9 @@ export function resolveFoot(p: { x: number; z: number }, grid: CollisionGrid, ve
   p.z = clamp(p.z, -LIMIT, LIMIT);
 }
 
+const _move: FootMoveInput = { dirX: 0, dirZ: 0, run: false, ground: true };
+const _vel = { x: 0, z: 0 };
+
 export function updateFoot(p: PlayerState, dt: number, input: FootInput, camYaw: number, grid: CollisionGrid, vehicles: Vehicle[]): void {
   let mx = 0;
   let mz = 0;
@@ -62,13 +70,33 @@ export function updateFoot(p: PlayerState, dt: number, input: FootInput, camYaw:
     mx /= l;
     mz /= l;
   }
-  const sp = input.run ? 7.2 : 3.4;
-  const a = Math.min(1, dt * 10);
-  p.vx += (mx * sp - p.vx) * a;
-  p.vz += (mz * sp - p.vz) * a;
-  p.x += p.vx * dt;
-  p.z += p.vz * dt;
+  _move.dirX = mx;
+  _move.dirZ = mz;
+  _move.run = input.run;
+  _move.ground = p.ground;
+  _vel.x = p.vx;
+  _vel.z = p.vz;
+  stepFootVelocity(_vel, _move, dt, _vel);
+  p.vx = _vel.x;
+  p.vz = _vel.z;
+  const ex = p.x + p.vx * dt;
+  const ez = p.z + p.vz * dt;
+  p.x = ex;
+  p.z = ez;
   resolveFoot(p, grid, vehicles);
+  // Something pushed us back: drop the velocity component into it (never add any).
+  const cx = p.x - ex;
+  const cz = p.z - ez;
+  const cl = Math.hypot(cx, cz);
+  if (cl > 1e-6) {
+    const nx = cx / cl;
+    const nz = cz / cl;
+    const vn = p.vx * nx + p.vz * nz;
+    if (vn < 0) {
+      p.vx -= vn * nx;
+      p.vz -= vn * nz;
+    }
+  }
   const gy = groundY(p.x, p.z);
   if (input.jump && p.ground) {
     p.vy = 6;

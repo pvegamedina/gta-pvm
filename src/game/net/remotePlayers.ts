@@ -308,6 +308,7 @@ export class RemotePlayerManager {
           weapon: motion.weapon,
           aiming: motion.aiming,
           alive: rp.alive,
+          aimPitch: motion.aimPitch ?? 0,
         });
       }
     }

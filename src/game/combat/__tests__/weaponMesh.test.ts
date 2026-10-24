@@ -55,6 +55,27 @@ describe.each(["pistol", "m4"] as const)("held %s while aiming", (weapon) => {
   });
 });
 
+describe("procedural rifle carry (not aiming)", () => {
+  it("holds the rifle with both arms forward, muzzle down", () => {
+    const rig = makeHuman(COLORS);
+    const handle = setHeldWeapon(rig.rHand, null, "m4", buildProceduralWeapon)!;
+    applyAimPose(rig, false, true, "m4");
+    rig.group.updateMatrixWorld(true);
+    expect(rig.rArm.rotation.x).toBeLessThan(-0.3);
+    expect(rig.lArm.rotation.x).toBeLessThan(-0.3);
+    const barrel = worldAxis(handle.group, new THREE.Vector3(0, 0, 1));
+    expect(barrel.z).toBeGreaterThan(0.3);
+    expect(barrel.y).toBeLessThan(-0.1);
+  });
+
+  it("leaves the pistol's one-handed carry to the walk cycle", () => {
+    const rig = makeHuman(COLORS);
+    applyAimPose(rig, false, true, "pistol");
+    expect(rig.rArm.rotation.x).toBe(0);
+    expect(rig.lArm.rotation.x).toBe(0);
+  });
+});
+
 describe("setHeldWeapon", () => {
   it("replaces the previous weapon and clears it for fists", () => {
     const rig = makeHuman(COLORS);

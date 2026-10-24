@@ -73,11 +73,19 @@ function extrapolateMotion(prev: PlayerMotion, last: PlayerMotion, spanMs: numbe
     ground: last.ground,
     weapon: last.weapon,
     aiming: last.aiming,
+    ...(last.aimPitch !== undefined ? { aimPitch: last.aimPitch } : {}),
     car:
       last.car && prev.car
         ? { type: last.car.type, color: last.car.color, yaw: angLerp(prev.car.yaw, last.car.yaw, t), speed: last.car.speed, steer: last.car.steer }
         : last.car,
   };
+}
+
+/** Optional aim pitch: lerped when both samples carry it, else the nearer one's (absent for old clients). */
+function lerpAimPitch(a: number | undefined, b: number | undefined, t: number): { aimPitch?: number } {
+  if (a !== undefined && b !== undefined) return { aimPitch: a + (b - a) * t };
+  const v = t < 0.5 ? a : b;
+  return v !== undefined ? { aimPitch: v } : {};
 }
 
 function lerpMotion(a: PlayerMotion, b: PlayerMotion, t: number): PlayerMotion {
@@ -88,6 +96,7 @@ function lerpMotion(a: PlayerMotion, b: PlayerMotion, t: number): PlayerMotion {
     ground: t < 0.5 ? a.ground : b.ground,
     weapon: t < 0.5 ? a.weapon : b.weapon,
     aiming: t < 0.5 ? a.aiming : b.aiming,
+    ...lerpAimPitch(a.aimPitch, b.aimPitch, t),
     car:
       a.car && b.car
         ? { type: t < 0.5 ? a.car.type : b.car.type, color: a.car.color, yaw: angLerp(a.car.yaw, b.car.yaw, t), speed: a.car.speed + (b.car.speed - a.car.speed) * t, steer: a.car.steer + (b.car.steer - a.car.steer) * t }

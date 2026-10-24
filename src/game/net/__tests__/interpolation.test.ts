@@ -81,3 +81,16 @@ describe("InterpolationBuffer", () => {
     expect(Math.abs(normalized)).toBeLessThan(0.3);
   });
 });
+
+describe("InterpolationBuffer aim pitch", () => {
+  it("interpolates the optional aim pitch and keeps it absent for old clients", () => {
+    const buf = new InterpolationBuffer();
+    buf.push({ ...motion(0), aimPitch: 0 }, 0);
+    buf.push({ ...motion(10), aimPitch: 0.4 }, 100);
+    expect(buf.sample(50 + INTERP_DELAY_MS)?.aimPitch).toBeCloseTo(0.2, 9);
+    const old = new InterpolationBuffer();
+    old.push(motion(0), 0);
+    old.push(motion(10), 100);
+    expect(old.sample(50 + INTERP_DELAY_MS)?.aimPitch).toBeUndefined();
+  });
+});

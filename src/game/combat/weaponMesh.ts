@@ -158,13 +158,23 @@ export function setHeldWeapon(
   return { group, weapon };
 }
 
-/** Raises the procedural human's arms into an aiming pose (no-op when not aiming/armed). */
-export function applyAimPose(rig: HumanRig, aiming: boolean, armed: boolean): void {
+/**
+ * Raises the procedural human's arms into an aiming pose (both hands on the
+ * gun). When armed with a long gun but not aiming, holds it two-handed at low
+ * ready (muzzle forward-down); the pistol's one-handed carry is left to the
+ * walk cycle. No-op when unarmed.
+ */
+export function applyAimPose(rig: HumanRig, aiming: boolean, armed: boolean, weapon?: WeaponId): void {
   if (aiming && armed) {
     rig.rArm.rotation.x = -1.55;
     rig.rArm.rotation.z = 0;
     rig.lArm.rotation.x = -1.45;
     rig.lArm.rotation.z = 0.25;
     rig.torso.rotation.x = 0.05;
+  } else if (armed && weapon === "m4") {
+    rig.rArm.rotation.x = -0.95;
+    rig.rArm.rotation.z = 0;
+    rig.lArm.rotation.x = -1.15;
+    rig.lArm.rotation.z = 0.4;
   }
 }

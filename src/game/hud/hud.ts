@@ -16,6 +16,7 @@ export interface KillFeedEntry {
 export class Hud {
   private lastMode = "";
   private lastPrompt = "";
+  private lastGear = "-";
   private toastT = 0;
   private hitMarkerT = 0;
   private vignetteT = 0;
@@ -62,6 +63,15 @@ export class Hud {
     this.toastT = 2;
   }
 
+  /** Gear label next to the speed ("1".."6", "R" reverse; empty hides it). */
+  setGear(label: string): void {
+    if (label === this.lastGear) return;
+    this.lastGear = label;
+    const g = $("spdGear");
+    if (g) g.textContent = label ? `MARCHA ${label}` : "";
+  }
+
+  /** Speed readout; `pct` fills the bar (the tachometer: rpm share of the redline). */
   setSpeedo(kmh: number, pct: number): void {
     const n = $("spdNum");
     if (n) n.textContent = String(Math.round(kmh));

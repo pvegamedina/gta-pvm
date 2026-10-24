@@ -1,6 +1,7 @@
 // Fallback CharacterRig built from the procedural box human (player/human.ts),
 // used only when the GLB character models fail to load. Keeps the original
-// sine-swing walk, aim pose, airborne pose and a simple fall-over on death.
+// sine-swing walk, two-handed aim pose (plus a two-handed low-ready rifle
+// carry), airborne pose and a simple fall-over on death.
 
 import type { WeaponId } from "@shared/protocol";
 import * as THREE from "three";
@@ -64,7 +65,7 @@ export function createProceduralRig(spec: RigSpec): CharacterRig {
       u.lArm.rotation.z = u.rArm.rotation.z = 0;
     }
     u.torso.rotation.x = running ? 0.22 : 0;
-    applyAimPose(u, aiming, armed);
+    applyAimPose(u, aiming, armed, weapon);
     const punch = attacks.punch;
     if (punch) (punch === "left" ? u.lArm : u.rArm).rotation.x = -1.5;
     // Gun kick: the raised right arm snaps up a little and recovers.

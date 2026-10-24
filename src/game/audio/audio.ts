@@ -1,4 +1,10 @@
-// WebAudio engine drone, horn, crash thump and synthesized weapon sounds.
+// WebAudio vehicle engines, horn, crash thump and synthesized weapon sounds.
+// Engines: a pure engine/gearbox model per car (audio/engine.ts: rpm from
+// wheel speed and gear ratios, automatic shifts with a torque cut, limiter,
+// turbo) drives a synthesized voice (audio/engineSynth.ts) for our own car
+// plus up to REMOTE_ENGINE_VOICES nearest remote players' cars (attenuated,
+// muffled and panned by distance), with exhaust pops, blow-off and a tyre
+// screech voice for our car. Voices are built once in init() and reused.
 // Gunshots are layered (sharp high-passed crack + pitch-dropping low thump +
 // band-passed body + short low-passed tail with a slap-back echo) through a
 // compressor bus for punch; pistol and rifle use different recipes. Remote
@@ -6,6 +12,51 @@
 // AudioContext + master gain stay exposed for other synthesized effects.
 
 import type { WeaponId } from "@shared/protocol";
+import { EngineModel, engineProfileFor, engineSoundParams, estimateThrottle, nearestVoices, type EngineSoundParams } from "./engine";
+import { EngineVoice, TireVoice } from "./engineSynth";
+
+/** What the audio needs to know about a car to synthesize its engine. */
+export interface VehicleSound {
+  /** Vehicle type key (selects the engine profile). */
+  type: string;
+  /** Top speed (m/s) and wheel radius (m) of the vehicle spec (gearing). */
+  topSpeed: number;
+  wheelRadius: number;
+  /** Forward speed (m/s, negative reversing). */
+  speed: number;
+}
+
+export interface LocalVehicleSound extends VehicleSound {
+  /** Accelerator (or reverse pedal while backing up) 0..1. */
+  throttle: number;
+  /** Tyre slip 0..1 (lateral skid / handbrake). */
+  slip: number;
+}
+
+export interface RemoteVehicleSound extends VehicleSound {
+  id: string;
+  /** Distance to the listener (m) and stereo pan (-1 left .. 1 right). */
+  distance: number;
+  pan: number;
+}
+
+/** Local engine state for the HUD / verification. */
+export interface EngineTelemetry {
+  type: string;
+  gear: number;
+  rpm: number;
+  load: number;
+  boost: number;
+  limiting: boolean;
+  shifting: boolean;
+  params: EngineSoundParams;
+}
+
+/** Remote engines: max simultaneous voices and audible range (m). */
+export const REMOTE_ENGINE_VOICES = 4;
+export const REMOTE_ENGINE_MAX_DISTANCE = 120;
+/** Overrun crackle rate (pops/s) for engines with `pops` at high rpm off-throttle. */
+const OVERRUN_POPS_PER_S = 7;
 
 export interface AudioSystem {
   ctx: AudioContext | null;
@@ -14,7 +65,16 @@ export interface AudioSystem {
   init(): void;
   horn(): void;
   thump(strength: number): void;
-  updateEngine(on: boolean, speed: number, throttle: number): void;
+  /**
+   * Per-frame vehicle audio. `active` false (paused, menu) fades every engine
+   * out; `local` is our own car (null on foot), `remotes` the other players'
+   * cars (the nearest REMOTE_ENGINE_VOICES within range get a voice).
+   */
+  updateVehicles(dt: number, active: boolean, local: LocalVehicleSound | null, remotes: readonly RemoteVehicleSound[]): void;
+  /** Our engine's state (null when not driving), for the HUD and debugging. */
+  engineTelemetry(): EngineTelemetry | null;
+  /** Stops every voice and closes the AudioContext. */
+  dispose(): void;
   /** Gunshot heard from `distance` metres (0 = our own gun). */
   gunshot(weapon: WeaponId, distance: number): void;
   /** Subtle mechanical action click right after our own shot. */
@@ -54,9 +114,14 @@ const SHOT_RECIPES: Record<WeaponId, ShotRecipe> = {
 export function createAudioSystem(): AudioSystem {
   let ctx: AudioContext | null = null;
   let master: GainNode | null = null;
-  let engOsc: OscillatorNode | null = null;
-  let engGain: GainNode | null = null;
-  let engFilter: BiquadFilterNode | null = null;
+  /** Engine bus (gentle compression so several engines don't clip). */
+  let engineBus: GainNode | null = null;
+  let localVoice: EngineVoice | null = null;
+  let tireVoice: TireVoice | null = null;
+  const remoteVoices: { voice: EngineVoice; id: string | null; model: EngineModel | null; prevSpeed: number }[] = [];
+  /** Our engine model, rebuilt when we get into a different kind of car. */
+  let localModel: EngineModel | null = null;
+  let localKey = "";
   /** Gunshot bus: compressor (punch without clipping on full-auto) -> master. */
   let gunBus: GainNode | null = null;
   /** Slap-back echo send for gunshot tails. */
@@ -100,6 +165,18 @@ export function createAudioSystem(): AudioSystem {
     o.stop(t + decay + 0.05);
   }
 
+  /** Turns model events into one-shot sounds (pops, blow-off). */
+  function playEvents(voice: EngineVoice, m: EngineModel, events: readonly string[], dt: number, level: number): void {
+    if (level <= 0.05) return;
+    const p = m.profile;
+    for (const e of events) {
+      if (e === "upshift" && p.pops) voice.pop(level);
+      else if (e === "blowoff") voice.blowoff();
+    }
+    // Overrun crackle: off-throttle at high rpm on sporty engines.
+    if (p.pops && m.load < 0.05 && m.rpm > 0.55 * p.redline && Math.random() < OVERRUN_POPS_PER_S * dt) voice.pop(0.6 * level);
+  }
+
   const sys: AudioSystem = {
     ctx: null,
     master: null,
@@ -112,17 +189,6 @@ export function createAudioSystem(): AudioSystem {
         master = ctx.createGain();
         master.gain.value = 0.5;
         master.connect(ctx.destination);
-        engOsc = ctx.createOscillator();
-        engOsc.type = "sawtooth";
-        engFilter = ctx.createBiquadFilter();
-        engFilter.type = "lowpass";
-        engFilter.frequency.value = 420;
-        engGain = ctx.createGain();
-        engGain.gain.value = 0;
-        engOsc.connect(engFilter);
-        engFilter.connect(engGain);
-        engGain.connect(master);
-        engOsc.start();
         // Gunshot bus (compressor) + slap-back echo send.
         const comp = ctx.createDynamicsCompressor();
         comp.threshold.value = -14;
@@ -146,6 +212,17 @@ export function createAudioSystem(): AudioSystem {
         noise = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
         const data = noise.getChannelData(0);
         for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+        // Engines: own bus + compressor, one voice for us, a pool for remote cars.
+        const engComp = ctx.createDynamicsCompressor();
+        engComp.threshold.value = -18;
+        engComp.ratio.value = 4;
+        engComp.connect(master);
+        engineBus = ctx.createGain();
+        engineBus.gain.value = 0.9;
+        engineBus.connect(engComp);
+        localVoice = new EngineVoice(ctx, engineBus, noise);
+        tireVoice = new TireVoice(ctx, engineBus, noise);
+        for (let i = 0; i < REMOTE_ENGINE_VOICES; i++) remoteVoices.push({ voice: new EngineVoice(ctx, engineBus, noise), id: null, model: null, prevSpeed: 0 });
         sys.ctx = ctx;
         sys.master = master;
       } catch {
@@ -237,11 +314,76 @@ export function createAudioSystem(): AudioSystem {
       noiseLayer(gunBus, t, "bandpass", 900, 2, 0.14, 0.07);
       noiseLayer(gunBus, t + 0.12, "bandpass", 2400, 4, 0.1, 0.03);
     },
-    updateEngine(on: boolean, speed: number, throttle: number) {
-      if (!ctx || !engGain || !engOsc || !engFilter) return;
-      engGain.gain.setTargetAtTime(on ? 0.05 + throttle * 0.04 : 0, ctx.currentTime, 0.08);
-      engOsc.frequency.setTargetAtTime(48 + speed * 3.4, ctx.currentTime, 0.08);
-      engFilter.frequency.setTargetAtTime(300 + speed * 18 + throttle * 200, ctx.currentTime, 0.1);
+    updateVehicles(dt, active, local, remotes) {
+      if (!ctx || !localVoice || !tireVoice) return;
+      const on = active && sys.soundOn;
+      // ---- our car ----
+      if (local) {
+        const key = `${local.type}:${local.topSpeed}:${local.wheelRadius}`;
+        if (!localModel || key !== localKey) {
+          localModel = new EngineModel(engineProfileFor(local.type), local.topSpeed, local.wheelRadius);
+          localKey = key;
+          localVoice.setProfile(localModel.profile);
+        }
+        const m = localModel;
+        const events = m.update(dt, { speed: local.speed, throttle: local.throttle });
+        if (on) playEvents(localVoice, m, events, dt, 1);
+        localVoice.update(engineSoundParams(m.profile, m.rpm, m.load, m.boost), on ? 1 : 0);
+        tireVoice.update(local.slip, Math.abs(local.speed), on ? 1 : 0);
+      } else {
+        localModel = null;
+        localKey = "";
+        if (localVoice.last) localVoice.update(localVoice.last, 0);
+        tireVoice.update(0, 0, 0);
+      }
+      // ---- remote cars: the nearest few get a (reused) voice ----
+      const chosen = nearestVoices(remotes, REMOTE_ENGINE_VOICES, REMOTE_ENGINE_MAX_DISTANCE);
+      for (const slot of remoteVoices) if (slot.id !== null && !chosen.some((c) => c.id === slot.id)) slot.id = null;
+      for (const car of chosen) {
+        let slot = remoteVoices.find((v) => v.id === car.id);
+        if (!slot) {
+          slot = remoteVoices.find((v) => v.id === null)!;
+          slot.id = car.id;
+          slot.model = new EngineModel(engineProfileFor(car.type), car.topSpeed, car.wheelRadius);
+          slot.voice.setProfile(slot.model.profile);
+          slot.prevSpeed = car.speed;
+        }
+        const m = slot.model!;
+        const throttle = estimateThrottle(slot.prevSpeed, car.speed, dt);
+        slot.prevSpeed = car.speed;
+        const events = m.update(dt, { speed: car.speed, throttle });
+        const atten = Math.max(0, 1 - car.distance / REMOTE_ENGINE_MAX_DISTANCE);
+        if (on) playEvents(slot.voice, m, events, dt, atten);
+        slot.voice.update(engineSoundParams(m.profile, m.rpm, m.load, m.boost), on ? 0.85 * atten * atten : 0, car.pan, 600 + 17000 * Math.pow(atten, 2.2));
+      }
+      for (const slot of remoteVoices) if (slot.id === null && slot.voice.last) slot.voice.update(slot.voice.last, 0);
+    },
+    engineTelemetry() {
+      const m = localModel;
+      if (!m) return null;
+      return {
+        type: localKey.split(":")[0],
+        gear: m.gear,
+        rpm: m.rpm,
+        load: m.load,
+        boost: m.boost,
+        limiting: m.limiting,
+        shifting: m.shiftLeft > 0,
+        params: engineSoundParams(m.profile, m.rpm, m.load, m.boost),
+      };
+    },
+    dispose() {
+      localVoice?.dispose();
+      tireVoice?.dispose();
+      for (const slot of remoteVoices) slot.voice.dispose();
+      remoteVoices.length = 0;
+      localVoice = null;
+      tireVoice = null;
+      localModel = null;
+      if (ctx) void ctx.close().catch(() => {});
+      ctx = null;
+      sys.ctx = null;
+      sys.master = null;
     },
   };
   return sys;

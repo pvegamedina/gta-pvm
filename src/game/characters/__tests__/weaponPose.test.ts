@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { prepareWeaponTemplate, WEAPON_POSES, MUZZLE_NAME, liftColor } from "../weaponPose";
+import { prepareWeaponTemplate, WEAPON_POSES, MUZZLE_NAME, SUPPORT_NAME, liftColor } from "../weaponPose";
 
 /**
  * Stand-in for a weapon GLB: a box along X (barrel at +X) whose bounding box
@@ -84,6 +84,52 @@ describe.each(["pistol", "m4"] as const)("%s template for the Wrist.R socket", (
     expect(muzzle.y - grip.y).toBeCloseTo((1 - pose.gripFrac[0]) * size[0] * scale, 4);
     // Height (socket -X is up): barrel height above the grip point.
     expect(grip.x - muzzle.x).toBeCloseTo((pose.muzzleFracY - pose.gripFrac[1]) * size[1] * scale, 4);
+  });
+});
+
+describe.each(["pistol", "m4"] as const)("%s two-handed grip config", (weapon) => {
+  const pose = WEAPON_POSES[weapon];
+
+  it("places a support-hand marker at the configured offset from the grip (gun frame: x barrel, y up, z right)", () => {
+    const socket = new THREE.Group();
+    const tpl = prepareWeaponTemplate(fakeWeaponScene(RAW[weapon].size, RAW[weapon].offset, pose.gripFrac), weapon);
+    socket.add(tpl);
+    tpl.updateMatrixWorld(true);
+    const grip = tpl.getObjectByName("gripMarker")!.getWorldPosition(new THREE.Vector3());
+    const support = tpl.getObjectByName(SUPPORT_NAME)!.getWorldPosition(new THREE.Vector3());
+    const q = tpl.getWorldQuaternion(new THREE.Quaternion());
+    const expected = new THREE.Vector3(...pose.support.offset).applyQuaternion(q).add(grip);
+    expect(support.distanceTo(expected)).toBeLessThan(1e-4);
+  });
+
+  it("keeps the support hand ahead of (rifle) or beside (pistol) the shooting hand, on the gun", () => {
+    const [along, , across] = pose.support.offset;
+    if (weapon === "m4") {
+      expect(along).toBeGreaterThan(0.08);
+      expect(along).toBeLessThan(pose.length * (1 - pose.gripFrac[0]));
+    } else {
+      expect(Math.abs(along)).toBeLessThan(0.06);
+      expect(across).toBeLessThan(0); // left side of the grip
+    }
+  });
+
+  it("aims two-handed; only long guns also carry two-handed when not aiming", () => {
+    expect(pose.aim.followPitch).toBe(true);
+    if (weapon === "m4") {
+      expect(pose.carry).not.toBeNull();
+      // Low ready: muzzle down.
+      expect(pose.carry!.pitch).toBeLessThan(-0.3);
+      expect(pose.carry!.followPitch).toBe(false);
+    } else {
+      expect(pose.carry).toBeNull();
+    }
+  });
+
+  it("keeps the shouldered/extended grip within arm's reach of the right shoulder", () => {
+    // Quaternius arm: upper 0.18 m + forearm 0.235 m, plus the hand to the grip.
+    const reach = Math.hypot(...pose.aim.grip);
+    expect(reach).toBeLessThan(0.18 + 0.235 + 0.1);
+    expect(pose.aim.grip[2]).toBeGreaterThan(0.15); // in front of the shoulder
   });
 });
 

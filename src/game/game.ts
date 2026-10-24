@@ -43,7 +43,8 @@ import { nearestVehicle, enterCar, exitCar, forceExitCar } from "./player/enterE
 import { spawnPeds, updatePeds, hitPed, spookPedsNear, pedPosition, pedVelocity, type Ped } from "./pedestrians/peds";
 
 import { createCameraState, snapCamera, updateCamera, cameraRight } from "./camera/camera";
-import { createAudioSystem } from "./audio/audio";
+import { createAudioSystem, type LocalVehicleSound, type RemoteVehicleSound } from "./audio/audio";
+import { engineProfileFor } from "./audio/engine";
 
 import { tickWeapon, tryFire, tryMelee, startReload, nextWeapon, totalSpread } from "./combat/weapons";
 import { applyDamage, tickRegen, respawn as respawnHealth, vehicleHitDamage, crashDamage, VEHICLE_HIT_SPEED_THRESHOLD } from "./combat/health";
@@ -268,6 +269,8 @@ export function createGame(): GameHandle {
   net.connect();
   net.setMotionSource(buildMotion);
 
+  /** Current aim pitch (sent to others so their copy of us aims up/down too). */
+  let aimPitch = 0;
   function buildMotion(): PlayerMotion {
     return {
       p: [player.x, player.y, player.z],
@@ -276,6 +279,7 @@ export function createGame(): GameHandle {
       ground: player.ground,
       weapon: player.weapon,
       aiming: player.aiming,
+      aimPitch: Math.round(aimPitch * 1000) / 1000,
       car: player.car
         ? { type: player.car.type, color: player.car.color, yaw: player.car.yaw, speed: player.car.speed, steer: player.car.steerVis }
         : null,
@@ -994,6 +998,7 @@ export function createGame(): GameHandle {
   }
 
   // ---------------- Frame loop ----------------
+  const _viewDir = new THREE.Vector3();
   let last = 0;
   let acc = 0;
   let rafId = 0;
@@ -1035,6 +1040,10 @@ export function createGame(): GameHandle {
       }
       if (n === 6) acc = 0;
 
+      // Camera first: the rig levels the gun at this frame's aim pitch.
+      const focus = deathAt !== null && localCorpse && localCorpse.focus(corpseFocus) ? corpseFocus : null;
+      updateCamera(cam, camera, player, dt, tClock, grid, focus);
+      aimPitch = viewPitch();
       if (player.mode === "foot") {
         player.mesh.update(dt, {
           speed: player.alive ? footSpeed(player) : 0,
@@ -1042,16 +1051,15 @@ export function createGame(): GameHandle {
           weapon: player.weapon,
           aiming: player.aiming,
           alive: player.alive,
+          aimPitch,
         });
       }
-      const focus = deathAt !== null && localCorpse && localCorpse.focus(corpseFocus) ? corpseFocus : null;
-      updateCamera(cam, camera, player, dt, tClock, grid, focus);
       env.update(dt, cam.fx, cam.fz, camera);
       corpses.update(dt);
       effects.update(dt);
       remotePlayers.update(dt, env.state.nightF);
       updateHud(dt);
-      updateAudioFx();
+      updateAudioFx(dt);
 
       if (deathAt !== null) {
         const left = Math.max(0, (deathAt + RESPAWN_DELAY_MS / 1000 - tClock));
@@ -1065,15 +1073,51 @@ export function createGame(): GameHandle {
           deathAt = null;
         }
       }
+    } else {
+      // Paused / game over: fade the engines out (their state is kept).
+      updateAudioFx(dt);
     }
     renderer.render(scene, camera);
   }
 
-  function updateAudioFx(): void {
-    const on = soundOn && playing && !paused && player.mode === "car";
-    const sp = on && player.car ? Math.abs(player.car.speed) : 0;
-    const thr = keys.KeyW || keys.ArrowUp ? 1 : 0;
-    audio.updateEngine(on, sp, thr);
+  /** Pitch (rad, + = up) of the view ray without the recoil kick (the held gun has its own). */
+  function viewPitch(): number {
+    camera.getWorldDirection(_viewDir);
+    return Math.asin(clamp(_viewDir.y, -1, 1)) - cam.recoil.pitch;
+  }
+
+  /** Reused per-frame vehicle audio inputs (no garbage per frame for our car). */
+  const localSound: LocalVehicleSound = { type: "sedan", topSpeed: 40, wheelRadius: 0.36, speed: 0, throttle: 0, slip: 0 };
+  const remoteSounds: RemoteVehicleSound[] = [];
+
+  function updateAudioFx(dt: number): void {
+    const car = player.mode === "car" && player.alive ? player.car : null;
+    if (car) {
+      const fwd = !!(keys.KeyW || keys.ArrowUp);
+      const back = !!(keys.KeyS || keys.ArrowDown);
+      localSound.type = car.type;
+      localSound.topSpeed = car.spec.max;
+      localSound.wheelRadius = car.spec.wr;
+      localSound.speed = car.speed;
+      // Backing up, the reverse pedal (S) is the accelerator.
+      localSound.throttle = car.speed < -0.5 ? (back ? 1 : 0) : fwd ? 1 : 0;
+      // Tyre slip: sideways speed (car frame) plus handbrake skids.
+      const lateral = Math.abs(car.vx * Math.cos(car.yaw) - car.vz * Math.sin(car.yaw));
+      let slip = clamp((lateral - 1.2) / 4, 0, 1);
+      if (keys.Space && Math.abs(car.speed) > 4) slip = Math.max(slip, clamp(Math.abs(car.speed) / 15, 0.3, 0.9));
+      localSound.slip = slip;
+    }
+    remoteSounds.length = 0;
+    const right = cameraRight(cam.yaw);
+    for (const rp of remotePlayers.all()) {
+      const v = rp.car;
+      if (!v || !v.root.visible) continue;
+      const dx = v.x - camera.position.x;
+      const dz = v.z - camera.position.z;
+      const d = Math.hypot(dx, dz);
+      remoteSounds.push({ id: rp.id, type: v.type, topSpeed: v.spec.max, wheelRadius: v.spec.wr, speed: v.speed, distance: d, pan: d > 0.1 ? ((dx * right.x + dz * right.z) / d) * 0.8 : 0 });
+    }
+    audio.updateVehicles(dt, playing && !paused, car ? localSound : null, remoteSounds);
   }
 
   const dots: MinimapDot[] = [];
@@ -1090,7 +1134,13 @@ export function createGame(): GameHandle {
       if (v) pr = "Pulsa E para entrar · " + v.spec.name;
     }
     hud.setPrompt(pr);
-    if (car) hud.setSpeedo(Math.abs(car.speed) * 3.6, (Math.abs(car.speed) / car.spec.max) * 100);
+    if (car) {
+      // The bar doubles as a tachometer so gear changes are visible as well as audible.
+      const eng = audio.engineTelemetry();
+      const redline = eng ? engineProfileFor(eng.type).redline : 0;
+      hud.setSpeedo(Math.abs(car.speed) * 3.6, eng ? (eng.rpm / redline) * 100 : (Math.abs(car.speed) / car.spec.max) * 100);
+      hud.setGear(eng ? (eng.gear < 0 ? "R" : String(eng.gear)) : "");
+    }
     hud.setHealth(player.health, MAX_HEALTH);
     const armed = player.weapon !== "fists" && player.mode === "foot";
     const ammo = player.ammo[player.weapon];
@@ -1224,6 +1274,15 @@ export function createGame(): GameHandle {
       initCharacterPicker();
     });
 
+  // Dev-only read-only telemetry for automated checks (engine rpm/gear, aim pitch).
+  const debugHook = process.env.NODE_ENV === "development";
+  if (debugHook) {
+    (window as unknown as Record<string, unknown>).__gtaDebug = {
+      engine: () => audio.engineTelemetry(),
+      player: () => ({ x: player.x, z: player.z, vx: player.vx, vz: player.vz, speed: footSpeed(player), mode: player.mode, aimPitch }),
+    };
+  }
+
   return {
     dispose() {
       disposed = true;
@@ -1235,6 +1294,8 @@ export function createGame(): GameHandle {
       physics?.dispose();
       remotePlayers.dispose();
       effects.dispose();
+      audio.dispose();
+      if (debugHook) delete (window as unknown as Record<string, unknown>).__gtaDebug;
       preview?.dispose();
       for (const [el, fn] of pickerHandlers) el.removeEventListener("click", fn);
       btnPlay?.removeEventListener("click", onPlayClick);

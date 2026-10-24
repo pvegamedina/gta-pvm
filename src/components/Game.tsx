@@ -42,7 +42,9 @@ export default function Game() {
         <canvas id="mini" width={180} height={180} />
         <div id="speedo">
           <div id="spdNum">0</div>
-          <div className="u">KM/H</div>
+          <div className="u">
+            KM/H · <span id="spdGear">1</span>
+          </div>
           <div id="spdBar">
             <i id="spdFill" />
           </div>

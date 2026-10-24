@@ -152,6 +152,46 @@ describe("CharacterAnimState", () => {
   });
 });
 
+describe("CharacterAnimState body lean and pose weights", () => {
+  it("leans forward while accelerating, back while braking, upright when steady", () => {
+    const s = new CharacterAnimState(DURATIONS);
+    let maxLean = 0;
+    let prev = s.lean;
+    // Speed ramps 0 -> 6.6 m/s at ~5 m/s^2 like the inertial player.
+    for (let i = 0; i < 80; i++) {
+      s.update(DT, { ...still, speed: Math.min(6.6, i * DT * 5) });
+      expect(Math.abs(s.lean - prev)).toBeLessThan(0.02);
+      prev = s.lean;
+      maxLean = Math.max(maxLean, s.lean);
+    }
+    expect(maxLean).toBeGreaterThan(0.05);
+    for (let i = 0; i < 120; i++) s.update(DT, { ...still, speed: 6.6 });
+    expect(Math.abs(s.lean)).toBeLessThan(0.01);
+    let minLean = 0;
+    for (let i = 0; i < 60; i++) {
+      s.update(DT, { ...still, speed: Math.max(0, 6.6 - i * DT * 8) });
+      minLean = Math.min(minLean, s.lean);
+    }
+    expect(minLean).toBeLessThan(-0.05);
+  });
+
+  it("exposes smoothed armed/aim weights that drop to zero while dead", () => {
+    const s = new CharacterAnimState(DURATIONS);
+    expect(s.armedWeight).toBe(0);
+    expect(s.aimWeight).toBe(0);
+    s.update(DT, { ...still, armed: true });
+    expect(s.armedWeight).toBeGreaterThan(0);
+    expect(s.armedWeight).toBeLessThan(0.5);
+    run(s, { ...still, armed: true, aiming: true }, 1);
+    expect(s.armedWeight).toBeGreaterThan(0.99);
+    expect(s.aimWeight).toBeGreaterThan(0.99);
+    run(s, { ...still, armed: true, aiming: true, alive: false }, 1);
+    expect(s.armedWeight).toBeLessThan(0.01);
+    expect(s.aimWeight).toBeLessThan(0.01);
+    expect(Math.abs(s.lean)).toBeLessThan(0.01);
+  });
+});
+
 describe("AttackTimers (procedural fallback rig)", () => {
   it("alternates punching hands and expires the punch after its duration", () => {
     const t = new AttackTimers();

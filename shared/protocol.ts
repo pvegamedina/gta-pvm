@@ -124,6 +124,9 @@ export interface PlayerMotion {
   ground: boolean;
   weapon: WeaponId;
   aiming: boolean;
+  /** Aim pitch (rad, + = up) so others see the gun levelled where we look.
+   * Optional/additive: older clients omit it (their guns stay level). */
+  aimPitch?: number;
   car: CarState | null;
 }
 

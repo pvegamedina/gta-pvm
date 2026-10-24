@@ -1,6 +1,7 @@
 // Pure blending math for character animation: framerate-independent damping,
-// speed-driven Idle/Walk/Run weights, the shared gait cycle rate, one-shot
-// fade envelopes and a minimum-dwell boolean filter. No THREE, unit-tested.
+// speed-driven Idle/Walk/Run weights, the shared (stride-matched) gait cycle
+// rate, the start/stop body lean, one-shot fade envelopes and a minimum-dwell
+// boolean filter. No THREE, unit-tested.
 
 /**
  * Exponential smoothing towards `target` with time constant `tau` (s).
@@ -20,10 +21,12 @@ export function smoothstep(e0: number, e1: number, x: number): number {
 /** Speed (m/s) where idle starts giving way to walk / walk is full. */
 export const WALK_START_SPEED = 0.1;
 export const WALK_FULL_SPEED = 1.3;
-/** Speed range of the walk -> run crossfade. Wide on purpose so decelerating
- * through it never changes weights faster than a few % per frame. */
-export const RUN_START_SPEED = 1.7;
-export const RUN_FULL_SPEED = 3.6;
+/** Speed range of the walk -> run crossfade. Starts just above the player's
+ * cruising walk (2.3 m/s, player/footMotion.ts) so walking shows the walk
+ * clip, and is wide on purpose: the ~1 s sprint build-up (and any slow-down)
+ * morphs through it progressively, a few % per frame. */
+export const RUN_START_SPEED = 2.5;
+export const RUN_FULL_SPEED = 5.2;
 
 export interface LocomotionWeights {
   idle: number;
@@ -43,18 +46,45 @@ const WALK_CYCLE = 1.33;
 const WALK_REF_SPEED = 1.4;
 const RUN_CYCLE = 0.8;
 const RUN_REF_SPEED = 3.8;
+/** Ground covered (m) by one full gait cycle (two steps) of each clip. */
+export const WALK_STRIDE = WALK_REF_SPEED * WALK_CYCLE;
+export const RUN_STRIDE = RUN_REF_SPEED * RUN_CYCLE;
+/** Playback-speed limits per clip: beyond them a clip looks sped up/slowed down
+ * more than the sliding it would hide (standing still, or faster than a sprint). */
+const WALK_RATE_MIN = 0.6;
+const WALK_RATE_MAX = 1.8;
+const RUN_RATE_MIN = 0.7;
+const RUN_RATE_MAX = 2.0;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const mix = (a: number, b: number, t: number) => a + (b - a) * t;
 
 /**
  * Gait cycles per second for a (smoothed) speed. Walk and Run share one
- * normalised phase advanced at this rate, so blending them never pops the feet.
+ * normalised phase advanced at this rate, so blending them never pops the
+ * feet. The rate is stride-matched (speed / stride, with the stride itself
+ * blended between the clips) so planted feet stay planted on the ground;
+ * only outside each clip's believable tempo range is it clamped.
  */
 export function gaitRate(speed: number): number {
-  const walk = clamp(speed / WALK_REF_SPEED, 0.6, 1.8) / WALK_CYCLE;
-  const run = clamp(speed / RUN_REF_SPEED, 0.7, 1.8) / RUN_CYCLE;
   const r = smoothstep(RUN_START_SPEED, RUN_FULL_SPEED, speed);
-  return walk * (1 - r) + run * r;
+  const stride = mix(WALK_STRIDE, RUN_STRIDE, r);
+  const lo = mix(WALK_RATE_MIN / WALK_CYCLE, RUN_RATE_MIN / RUN_CYCLE, r);
+  const hi = mix(WALK_RATE_MAX / WALK_CYCLE, RUN_RATE_MAX / RUN_CYCLE, r);
+  return clamp(speed / stride, lo, hi);
+}
+
+/** Body lean (rad) per m/s² of acceleration, and its cap (~8°: subtle). */
+const LEAN_PER_ACCEL = 0.03;
+export const MAX_LEAN = 0.14;
+
+/**
+ * Upper-body pitch for a horizontal acceleration (m/s², + = speeding up):
+ * people lean into a start and rock back while braking. Odd, monotonic and
+ * soft-saturating (tanh) at ±MAX_LEAN.
+ */
+export function leanFromAccel(accel: number): number {
+  return MAX_LEAN * Math.tanh((accel * LEAN_PER_ACCEL) / MAX_LEAN);
 }
 
 /**

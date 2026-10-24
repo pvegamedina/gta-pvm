@@ -5,6 +5,8 @@
 // Wrist.R bone (with a spring-driven recoil kick on every shot), and an
 // invisible hitbox for castShot(). The skinned visual is exposed as
 // `ragdollRoot` so a corpse can hand its skeleton to the physics ragdoll.
+// After the mixer, characters/gunHandling.ts adds the start/stop lean and
+// the two-handed weapon stance (IK), blended by the smoothed armed/aim weights.
 
 import * as THREE from "three";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
@@ -16,11 +18,13 @@ import { createHitbox, excludeFromRaycast, pruneRaycastWhenHidden } from "./hitb
 import type { CharacterRig, RigSpec, RigUpdate } from "./characterRig";
 import { MUZZLE_NAME } from "./weaponPose";
 import { GUN_KICK_OMEGA, RecoilSpring, WEAPON_FEEL } from "../combat/recoil";
+import { GunHandling, findUpperBodyBones } from "./gunHandling";
 
 /** GLTFLoader strips "." from node names, so the "Wrist.R" bone is named "WristR". */
 const WEAPON_SOCKET_NAMES = ["WristR", "Wrist.R"];
 
-// ---- Held-gun recoil (scaled by WEAPON_FEEL[weapon].gunKick, spring in combat/recoil.ts) ----
+// ---- One-handed held-gun recoil (scaled by WEAPON_FEEL[weapon].gunKick, spring in
+// combat/recoil.ts). Faded out as the two-handed stance (with its own kick) takes over. ----
 /** Barrel pitch-up (rad) at full kick: the wrist bone rotates about its Z
  * (its +Y runs along the barrel, -X points up, so +Z rotation lifts the muzzle). */
 const KICK_PITCH = 0.42;
@@ -59,6 +63,9 @@ export function createModelRig(assets: CharacterAssets, spec: RigSpec): Characte
     durations[name] = clip.duration;
   }
   const anim = new CharacterAnimState(durations);
+  // Captures the bind pose, so it must run before the first mixer update.
+  const upperBones = findUpperBodyBones(visual);
+  const handling = upperBones ? new GunHandling(upperBones) : null;
 
   let weapon: WeaponId = "fists";
   let handle: WeaponMeshHandle | null = null;
@@ -68,6 +75,7 @@ export function createModelRig(assets: CharacterAssets, spec: RigSpec): Characte
   const buildWeapon = (w: "pistol" | "m4") => assets.weapons[w].clone();
 
   function apply(): void {
+    handling?.restoreBindPose();
     for (const [name, action] of actions) {
       action.setEffectiveWeight(anim.weight(name));
       action.time = anim.clipTime(name);
@@ -85,11 +93,26 @@ export function createModelRig(assets: CharacterAssets, spec: RigSpec): Characte
     }
     anim.update(dt, { speed: s.speed, armed: weapon !== "fists", aiming: s.aiming, alive: s.alive, running: s.running });
     apply();
-    // Recoil on top of the animated pose (the mixer rewrites the wrist next frame).
     kick.update(dt);
     const k = kick.value;
-    if (handle) handle.group.position.copy(handleBase).y -= k * KICK_BACK;
-    if (Math.abs(k) > 1e-4 && socket !== visual) socket.rotateZ(k * KICK_PITCH);
+    // Lean + two-handed stance on top of the animated pose (the mixer rewrites
+    // every bone next frame, so nothing accumulates).
+    let stance = 0;
+    if (handling) {
+      const feel = WEAPON_FEEL[weapon].gunKick;
+      stance = handling.apply(group, handle?.group ?? null, {
+        weapon,
+        armedWeight: anim.armedWeight,
+        aimWeight: anim.aimWeight,
+        aimPitch: s.aimPitch ?? 0,
+        lean: s.ground ? anim.lean : 0,
+        kick: feel > 0 ? k / feel : 0,
+      });
+    }
+    // One-handed recoil for whatever share of the pose is still the animation.
+    const k1 = k * (1 - stance);
+    if (handle) handle.group.position.copy(handleBase).y -= k1 * KICK_BACK;
+    if (Math.abs(k1) > 1e-4 && socket !== visual) socket.rotateZ(k1 * KICK_PITCH);
   }
 
   return {
