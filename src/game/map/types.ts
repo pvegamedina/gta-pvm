@@ -187,6 +187,12 @@ export type LanduseKind =
 export interface MapLanduse {
   kind: LanduseKind;
   name?: string;
+  /** OSM surface (pitches, tracks): "tartan", "grass", "clay"... */
+  surface?: string;
+  /** OSM sport of a pitch ("soccer", "tennis", "basketball"...). */
+  sport?: string;
+  /** A track mapped as a closed LINE (area=no): a running loop, not a filled area. */
+  linear?: boolean;
   /** Polygon area in m². */
   area: number;
   points: Ring;

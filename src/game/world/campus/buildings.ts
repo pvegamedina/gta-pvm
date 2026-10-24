@@ -8,7 +8,13 @@
 //
 // Each building also becomes a polygon collider (player, peds, cars, camera)
 // and part of one static trimesh for the ragdoll physics. Names and
-// categories are kept in `info` for phase 4b (facade modules, HUD toasts).
+// categories are kept in `info` (HUD toasts).
+//
+// Phase 4b: every footprint also gets a MegaKit facade layout
+// (facadeLayout.ts, rendered by facades.ts once the kit loads; these walls
+// stay behind the modules as the far LOD and shadow caster), small houses get
+// gabled / hipped tile roofs instead of the flat roof + parapet, and open
+// canopies (building=roof) stand on columns.
 
 import * as THREE from "three";
 import type { CampusMap } from "../../map/loader";
@@ -18,7 +24,10 @@ import type { CollisionGrid } from "../colliders";
 import type { ShootableRegistry } from "../../combat/shootables";
 import { appendArrays, emptyArrays, type RibbonArrays } from "./ribbon";
 import { buildParapet, buildRoof, extrudeWalls } from "./extrude";
-import { FACADE_TILES, concreteTexture, facadeTextures, roofTexture, type FacadeStyle } from "./textures";
+import { FACADE_TILES, concreteTexture, facadeTextures, roofTexture, tileRoofTexture, type FacadeStyle } from "./textures";
+import { layoutFacade, type FacadeLayout } from "./facadeLayout";
+import { canopyColumns, pitchedRoof, wantsPitchedRoof } from "./roofs";
+import type { FacadeBuildingRef } from "./facades";
 
 export const FLOOR_HEIGHT = 3.2;
 const PARAPET_HEIGHT = 0.9;
@@ -51,7 +60,22 @@ export interface BuildingInfo {
   centroid: Vec2;
   base: number;
   top: number;
+  /** Ground point in front of the main entrance (facade layout), when it has one. */
+  entrance: Vec2 | null;
+  /** Outward direction (game yaw) of the entrance facade. */
+  entranceYaw: number;
 }
+
+export interface BuildingOptions {
+  /** Terrain height (entrances on slopes, canopy columns). */
+  terrainHeight: (x: number, z: number) => number;
+  /** Distance to the nearest street / footway (entrance side). */
+  roadDistance?: (x: number, z: number) => number;
+}
+
+/** Canopy column radius (m) and spacing. */
+const COLUMN_RADIUS = 0.18;
+const COLUMN_SPACING = 6;
 
 export interface BuildingsBuild {
   group: THREE.Group;
@@ -60,7 +84,9 @@ export interface BuildingsBuild {
   trimesh: { vertices: Float32Array; indices: Uint32Array };
   /** Facade materials whose emissive (lit windows) the environment drives at night. */
   facadeMaterials: THREE.MeshLambertMaterial[];
-  stats: { vertices: number; triangles: number; meshes: number };
+  /** MegaKit facade layouts (non-fallback footprints) for facades.ts. */
+  facades: FacadeBuildingRef[];
+  stats: { vertices: number; triangles: number; meshes: number; pitchedRoofs: number; canopyColumns: number };
 }
 
 /** Stable small hash of a string (tint choice per building). */
@@ -81,7 +107,7 @@ function cleanRing(ring: Ring): Ring {
   return out;
 }
 
-type Layer = FacadeStyle | "roof" | "trim";
+type Layer = FacadeStyle | "roof" | "trim" | "tiles";
 
 interface ChunkLayer {
   arrays: RibbonArrays;
@@ -92,13 +118,16 @@ function pushColor(dst: ChunkLayer, count: number, c: THREE.Color): void {
   for (let i = 0; i < count; i++) dst.colors.push(c.r, c.g, c.b);
 }
 
-export function buildBuildings(map: CampusMap, grid: CollisionGrid, shootables: ShootableRegistry, anisotropy: number): BuildingsBuild {
+export function buildBuildings(map: CampusMap, grid: CollisionGrid, shootables: ShootableRegistry, anisotropy: number, opts: BuildingOptions): BuildingsBuild {
   const chunks = new Map<string, Map<Layer, ChunkLayer>>();
   const info: BuildingInfo[] = [];
   const physPos: number[] = [];
   const physIdx: number[] = [];
   const tint = new THREE.Color();
   const white = new THREE.Color(1, 1, 1);
+  const facades: FacadeBuildingRef[] = [];
+  const columns: { x: number; z: number; y0: number; y1: number }[] = [];
+  let pitchedRoofs = 0;
 
   const layerOf = (key: string, layer: Layer): ChunkLayer => {
     let c = chunks.get(key);
@@ -126,16 +155,36 @@ export function buildBuildings(map: CampusMap, grid: CollisionGrid, shootables: 
     const [cx, cz] = polygonCentroid(ring);
     const key = `${Math.floor(cx / CHUNK)},${Math.floor(cz / CHUNK)}`;
     const top = b.baseMin + b.height;
-    info.push({ name: b.name, category: b.category, centroid: [cx, cz], base: b.baseMin, top });
+    const entry: BuildingInfo = { name: b.name, category: b.category, centroid: [cx, cz], base: b.baseMin, top, entrance: null, entranceYaw: 0 };
+    info.push(entry);
 
     if (b.category === "roof") {
-      // Canopy: a thin slab on top, open underneath (no collider, walk under it).
+      // Canopy: a thin slab on top, open underneath (walk under it), held up by columns.
       const slab = extrudeWalls(ring, top - 0.35, top, { bayWidth: 2, floorHeight: 2, vBase: 0 });
       addTo(key, "trim", slab, tint, true);
       addTo(key, "trim", buildRoof(ring, top), tint, true);
       const under = buildRoof([...ring].reverse(), top - 0.35);
       addTo(key, "trim", under, tint, false);
+      for (const [x, z] of canopyColumns(ring, COLUMN_SPACING, 0.45)) {
+        const y0 = opts.terrainHeight(x, z) - 0.2;
+        if (top - 0.35 - y0 < 1.2) continue;
+        columns.push({ x, z, y0, y1: top - 0.35 });
+        grid.addCirc(x, z, COLUMN_RADIUS + 0.05, y0, top - 0.35 - y0);
+      }
       continue;
+    }
+
+    const pitched = wantsPitchedRoof(b.category, ring, b.height) ? pitchedRoof(ring, top, { pitch: 0.55, overhang: 0.35 }) : null;
+    const layout: FacadeLayout = layoutFacade(
+      { id: b.id, category: b.category, ring, base: b.baseMin, top, levels: b.levels, pitched: pitched !== null },
+      { roadDistance: opts.roadDistance, groundAt: opts.terrainHeight },
+    );
+    entry.entrance = layout.entrance;
+    entry.entranceYaw = layout.entranceYaw;
+    if (!layout.fallback) {
+      let r = 0;
+      for (const [x, z] of ring) r = Math.max(r, Math.hypot(x - cx, z - cz));
+      facades.push({ layout, cx, cz, r, base: b.baseMin, top: top + 1 });
     }
 
     const floorH = b.levels && b.levels > 0 ? Math.max(2.6, Math.min(4.5, b.height / b.levels)) : FLOOR_HEIGHT;
@@ -145,6 +194,14 @@ export function buildBuildings(map: CampusMap, grid: CollisionGrid, shootables: 
       vBase: b.baseMin,
     });
     addTo(key, st.style, walls, tint, true);
+    if (pitched) {
+      pitchedRoofs++;
+      addTo(key, "tiles", pitched.roof, white, true);
+      // Gable ends share the concrete "trim" texture (darker than the facade): lift them to the wall colour.
+      addTo(key, "trim", pitched.gables, tint.clone().multiplyScalar(1.55), true);
+      grid.addPolygon(ring, b.baseMin - FOUNDATION, top + pitched.ridgeHeight);
+      continue;
+    }
     addTo(key, "roof", buildRoof(ring, top), white, true);
     const trim = tint.clone().multiplyScalar(0.88);
     addTo(key, "trim", buildParapet(ring, top, PARAPET_HEIGHT, PARAPET_THICKNESS), trim, false);
@@ -163,6 +220,7 @@ export function buildBuildings(map: CampusMap, grid: CollisionGrid, shootables: 
   const roofTex = roofTexture(anisotropy);
   mats.set("roof", new THREE.MeshLambertMaterial({ map: roofTex, vertexColors: true }));
   mats.set("trim", new THREE.MeshLambertMaterial({ map: concreteTexture(anisotropy), vertexColors: true }));
+  mats.set("tiles", new THREE.MeshLambertMaterial({ map: tileRoofTexture(anisotropy), vertexColors: true }));
 
   const group = new THREE.Group();
   group.name = "buildings";
@@ -189,12 +247,28 @@ export function buildBuildings(map: CampusMap, grid: CollisionGrid, shootables: 
       triangles += a.indices.length / 3;
     }
   }
+  // Canopy columns: one instanced cylinder mesh for the whole campus.
+  if (columns.length > 0) {
+    const geo = new THREE.CylinderGeometry(COLUMN_RADIUS, COLUMN_RADIUS, 1, 10).translate(0, 0.5, 0);
+    // The trim material uses vertex colours: give the cylinder a light grey colour attribute.
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(new Array(geo.attributes.position.count * 3).fill(0.92), 3));
+    const mesh = new THREE.InstancedMesh(geo, mats.get("trim")!, columns.length);
+    const m4 = new THREE.Matrix4();
+    columns.forEach((c, i) => mesh.setMatrixAt(i, m4.makeScale(1, c.y1 - c.y0, 1).setPosition(c.x, c.y0, c.z)));
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.name = "buildings:canopyColumns";
+    group.add(mesh);
+  }
   return {
     group,
     info,
     trimesh: { vertices: new Float32Array(physPos), indices: new Uint32Array(physIdx) },
     facadeMaterials,
-    stats: { vertices, triangles, meshes: group.children.length },
+    facades,
+    stats: { vertices, triangles, meshes: group.children.length, pitchedRoofs, canopyColumns: columns.length },
   };
 }
 

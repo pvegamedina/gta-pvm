@@ -19,7 +19,7 @@ export interface Environment {
   state: EnvState;
   /** `fy` is the ground height at the focus (the sun's shadow frustum follows it). */
   update(dt: number, fx: number, fz: number, camera: THREE.PerspectiveCamera, fy?: number): void;
-  registerBuildingMat(m: THREE.MeshLambertMaterial): void;
+  registerBuildingMat(m: BuildingLightMat): void;
   lightMats: { bulb: THREE.MeshBasicMaterial | null; pool: THREE.MeshBasicMaterial | null; head: THREE.MeshLambertMaterial | null };
   lightDir: THREE.Vector3;
   advanceHours(h: number): void;
@@ -157,7 +157,7 @@ export function createEnvironment(scene: THREE.Scene): Environment {
   scene.add(carSpot);
   scene.add(carSpot.target);
 
-  const bMats: THREE.MeshLambertMaterial[] = [];
+  const bMats: BuildingLightMat[] = [];
   const lightMats: Environment["lightMats"] = { bulb: null, pool: null, head: null };
   const lightDir = new THREE.Vector3();
 
@@ -200,7 +200,7 @@ export function createEnvironment(scene: THREE.Scene): Environment {
     (stars.material as THREE.PointsMaterial).opacity = state.nightF;
     for (let i = 0; i < bMats.length; i++) bMats[i].emissiveIntensity = state.nightF * 1.1;
     if (lightMats.bulb) lightMats.bulb.color.setRGB(lerp(0.55, 1, state.nightF), lerp(0.55, 0.95, state.nightF), lerp(0.5, 0.75, state.nightF));
-    if (lightMats.pool) lightMats.pool.opacity = state.nightF * 0.55;
+    if (lightMats.pool) lightMats.pool.opacity = state.nightF * 0.8;
     if (lightMats.head) lightMats.head.emissiveIntensity = 0.25 + state.nightF * 1.4;
     for (let i = 0; i < clouds.length; i++) {
       const c = clouds[i];

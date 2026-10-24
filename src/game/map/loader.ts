@@ -210,6 +210,9 @@ function validate(m: Record<string, unknown>): CampusMapFile {
     const l = obj(raw, p);
     oneOf(l.kind, LANDUSE_KINDS, `${p}.kind`);
     optStr(l.name, `${p}.name`);
+    optStr(l.surface, `${p}.surface`);
+    optStr(l.sport, `${p}.sport`);
+    if (l.linear !== undefined && typeof l.linear !== "boolean") throw new MapValidationError(`${p}.linear must be a boolean`);
     num(l.area, `${p}.area`);
     points(l.points, `${p}.points`, 3);
   });

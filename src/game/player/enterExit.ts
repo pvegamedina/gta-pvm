@@ -14,7 +14,8 @@ export function nearestVehicle(p: { x: number; z: number }, vehicles: Vehicle[])
     if (v.mode === "player") continue;
     const dx = p.x - v.x;
     const dz = p.z - v.z;
-    if (Math.abs(dx) > 8 || Math.abs(dz) > 8) continue;
+    const reach = v.spec.L / 2 + 3;
+    if (Math.abs(dx) > reach || Math.abs(dz) > reach) continue;
     const lx = dx * Math.cos(v.yaw) - dz * Math.sin(v.yaw);
     const lz = dx * Math.sin(v.yaw) + dz * Math.cos(v.yaw) - v.spec.zc;
     const ex = Math.max(Math.abs(lx) - v.spec.W / 2, 0);
@@ -37,7 +38,8 @@ export function isFree(x: number, z: number, r: number, grid: CollisionGrid, veh
   });
   if (!free) return false;
   for (const v of vehicles) {
-    if (Math.abs(v.x - x) > 6 || Math.abs(v.z - z) > 6) continue;
+    const reach = v.spec.L / 2 + v.spec.rad + r + 0.5;
+    if (Math.abs(v.x - x) > reach || Math.abs(v.z - z) > reach) continue;
     for (const o of v.spec.offs) {
       const dx = x - (v.x + Math.sin(v.yaw) * o);
       const dz = z - (v.z + Math.cos(v.yaw) * o);

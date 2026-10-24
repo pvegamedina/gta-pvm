@@ -18,6 +18,7 @@ export class Hud {
   private lastPrompt = "";
   private lastGear = "-";
   private toastT = 0;
+  private placeT = 0;
   private hitMarkerT = 0;
   private vignetteT = 0;
   private killFeedEl = $("killFeed");
@@ -61,6 +62,16 @@ export class Hud {
       t.classList.add("show");
     }
     this.toastT = 2;
+  }
+
+  /** GTA-style location toast (bottom right): fades in, stays `seconds`, fades out. */
+  showPlace(name: string, sub: string, seconds = 3): void {
+    const n = $("placeName");
+    const s = $("placeSub");
+    if (n) n.textContent = name;
+    if (s) s.textContent = sub;
+    $("placeToast")?.classList.add("show");
+    this.placeT = seconds;
   }
 
   /** Gear label next to the speed ("1".."6", "R" reverse; empty hides it). */
@@ -173,6 +184,10 @@ export class Hud {
   }
 
   tick(dt: number): void {
+    if (this.placeT > 0) {
+      this.placeT -= dt;
+      if (this.placeT <= 0) $("placeToast")?.classList.remove("show");
+    }
     if (this.toastT > 0) {
       this.toastT -= dt;
       if (this.toastT <= 0) $("toast")?.classList.remove("show");

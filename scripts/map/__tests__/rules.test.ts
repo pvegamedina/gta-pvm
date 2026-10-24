@@ -1,3 +1,4 @@
+import { landuseDetails } from "../landuse";
 import { describe, expect, it } from "vitest";
 import { buildingCategory, buildingHeight } from "../buildings";
 import { roadAttributes } from "../roads";
@@ -131,5 +132,20 @@ describe("roadAttributes", () => {
     expect(roadAttributes({ highway: "motorway" })!.sidewalkOffset).toBe(0);
     expect(roadAttributes({ highway: "residential", sidewalk: "no" })!.sidewalkOffset).toBe(0);
     expect(roadAttributes({ highway: "footway" })!.sidewalkOffset).toBe(0);
+  });
+});
+
+describe("landuseDetails", () => {
+  it("keeps the surface and sport of pitches and tracks", () => {
+    expect(landuseDetails({ leisure: "pitch", sport: "tennis", surface: "clay" })).toEqual({ sport: "tennis", surface: "clay" });
+    expect(landuseDetails({ leisure: "track", surface: "tartan" })).toEqual({ surface: "tartan" });
+  });
+
+  it("flags tracks mapped as lines around an area (area=no)", () => {
+    expect(landuseDetails({ leisure: "track", area: "no", surface: "paved" })).toEqual({ surface: "paved", linear: true });
+  });
+
+  it("adds nothing for plain areas", () => {
+    expect(landuseDetails({ leisure: "park" })).toEqual({});
   });
 });

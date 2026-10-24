@@ -253,3 +253,74 @@ export function concreteTexture(anisotropy: number): THREE.CanvasTexture {
   x.fillRect(0, 30, 64, 2);
   return toTexture(c, anisotropy);
 }
+
+/** Terracotta roof tiles (Andalusian houses): 2 m per repeat, rows along u (the eaves). */
+export function tileRoofTexture(anisotropy: number): THREE.CanvasTexture {
+  const [c, x] = canvas(128, 128);
+  const rnd = prng(41);
+  x.fillStyle = "#9a4a30";
+  x.fillRect(0, 0, 128, 128);
+  // 8 rows of curved tiles, 10 per row, alternating offset; shaded lower lip.
+  for (let j = 0; j < 8; j++) {
+    for (let i = -1; i < 11; i++) {
+      const w = 12.8;
+      const ox = i * w + (j % 2 ? w / 2 : 0);
+      const v = 0.85 + rnd() * 0.3;
+      const g = x.createLinearGradient(ox, 0, ox + w, 0);
+      g.addColorStop(0, `rgb(${Math.round(120 * v)},${Math.round(55 * v)},${Math.round(36 * v)})`);
+      g.addColorStop(0.5, `rgb(${Math.round(178 * v)},${Math.round(88 * v)},${Math.round(58 * v)})`);
+      g.addColorStop(1, `rgb(${Math.round(110 * v)},${Math.round(50 * v)},${Math.round(33 * v)})`);
+      x.fillStyle = g;
+      x.fillRect(ox, j * 16, w - 1, 14);
+      x.fillStyle = "rgba(0,0,0,0.25)";
+      x.fillRect(ox, j * 16 + 13, w - 1, 3);
+    }
+  }
+  speckle(x, 128, 128, 0.06, rnd, 1500);
+  return toTexture(c, anisotropy);
+}
+
+/** Straight lane arrow (white on transparent, use with alphaTest), pointing to v = 1. 1 x 3 m quad. */
+export function arrowTexture(anisotropy: number): THREE.CanvasTexture {
+  const [c, x] = canvas(64, 192);
+  x.clearRect(0, 0, 64, 192);
+  x.fillStyle = "rgba(214,214,206,1)";
+  // Shaft (bottom) and head (top): canvas top = v 1 = the front of the arrow.
+  x.fillRect(26, 70, 12, 116);
+  x.beginPath();
+  x.moveTo(32, 6);
+  x.lineTo(58, 76);
+  x.lineTo(6, 76);
+  x.closePath();
+  x.fill();
+  const t = toTexture(c, anisotropy, false);
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  return t;
+}
+
+/** Tactile paving at dropped kerbs (Spanish red "botones" slabs): 1 m per repeat. */
+export function tactileTexture(anisotropy: number): THREE.CanvasTexture {
+  const [c, x] = canvas(64, 64);
+  const rnd = prng(57);
+  x.fillStyle = "#8e3b2c";
+  x.fillRect(0, 0, 64, 64);
+  speckle(x, 64, 64, 0.06, rnd, 600);
+  for (let j = 0; j < 4; j++) {
+    for (let i = 0; i < 4; i++) {
+      const cx = 8 + i * 16;
+      const cy = 8 + j * 16;
+      x.fillStyle = "rgba(0,0,0,0.28)";
+      x.beginPath();
+      x.arc(cx + 1, cy + 1.5, 4.5, 0, Math.PI * 2);
+      x.fill();
+      x.fillStyle = "#b5503d";
+      x.beginPath();
+      x.arc(cx, cy, 4.2, 0, Math.PI * 2);
+      x.fill();
+    }
+  }
+  x.fillStyle = "rgba(0,0,0,0.25)";
+  x.fillRect(0, 0, 64, 1);
+  x.fillRect(0, 0, 1, 64);
+  return toTexture(c, anisotropy);
+}

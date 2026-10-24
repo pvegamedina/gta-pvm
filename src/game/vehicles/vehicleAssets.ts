@@ -5,11 +5,20 @@
 // Instances (meshes.ts) reuse the geometries and the shared materials; only
 // tinted paint gets a per-colour material. Until the GLBs arrive (or if they
 // fail) a procedural box template with the same layout stands in.
+//
+// Public Transport Pack models (bus, school bus, ambulance) need more work:
+// they are re-oriented / centred ("orient"), stretched along their length
+// (body and axle positions only), coloured per primitive (their materials
+// were lost in the OBJ conversion), their single "FrontWheels" mesh is split
+// into a left and a right wheel so each can steer, their shared "Lights"
+// material is split into headlights (front) and tail lights (rear), and the
+// ambulance gets a generated roof light bar.
 
 import * as THREE from "three";
 import { createGltfLoader, displayColor, toLambert } from "../assets/gltf";
 import { VEHICLE_CATALOG, VEHICLE_TYPE_KEYS } from "./catalog";
 import type { VehicleSpec, VehicleTypeKey } from "./types";
+import { partitionTriangles } from "./partition";
 
 /** What a body part does at runtime. */
 export type PartRole = "paint" | "head" | "tail" | "reverse" | "barRed" | "barBlue" | "other";
@@ -84,13 +93,41 @@ export function vehicleTemplate(key: VehicleTypeKey): VehicleTemplate {
 
 // ---------------- GLB -> template ----------------
 
-type NodeKind = "body" | "rear" | "fl" | "fr";
+type NodeKind = "body" | "rear" | "fl" | "fr" | "frontPair";
 
 function nodeKind(name: string): NodeKind {
   if (/BackWheels/i.test(name)) return "rear";
   if (/FrontLeftWheel/i.test(name)) return "fl";
   if (/FrontRightWheel/i.test(name)) return "fr";
+  // Both front wheels in one mesh (Public Transport Pack): split by side below.
+  if (/FrontWheels/i.test(name)) return "frontPair";
   return "body";
+}
+
+const flatCache = new Map<number, THREE.MeshLambertMaterial>();
+
+/** Shared Lambert material for a display colour (models without usable materials). */
+function flatMaterial(color: number): THREE.MeshLambertMaterial {
+  let m = flatCache.get(color);
+  if (!m) {
+    m = new THREE.MeshLambertMaterial({ color });
+    flatCache.set(color, m);
+  }
+  return m;
+}
+
+/** Model-space coordinate `axis` (0 x, 1 y, 2 z) of vertex i of `g` under `matrix`. */
+function axisOf(g: THREE.BufferGeometry, matrix: THREE.Matrix4, axis: 0 | 1 | 2): (i: number) => number {
+  const pos = g.attributes.position;
+  const e = matrix.elements;
+  return (i) => e[axis] * pos.getX(i) + e[4 + axis] * pos.getY(i) + e[8 + axis] * pos.getZ(i) + e[12 + axis];
+}
+
+/** The triangles of `g` on either side of a model-space plane (axis = threshold). */
+function splitGeometry(g: THREE.BufferGeometry, matrix: THREE.Matrix4, axis: 0 | 1 | 2, threshold: number): [THREE.BufferGeometry | null, THREE.BufferGeometry | null] {
+  const idx = indexOf(g);
+  const [lo, hi] = partitionTriangles(idx, axisOf(g, matrix, axis), threshold);
+  return [lo.length ? subGeometry(g, idx, lo) : null, hi.length ? subGeometry(g, idx, hi) : null];
 }
 
 function roleOf(spec: VehicleSpec, materialName: string): { role: PartRole; shade: number } {
@@ -191,21 +228,43 @@ function reverseLamps(tails: PartTemplate[]): PartTemplate[] {
 }
 
 function templateFromGltf(spec: VehicleSpec, scene: THREE.Object3D): VehicleTemplate {
+  const model = spec.model;
+  if (model.orient) {
+    scene.rotation.set(0, model.orient.rotateY, 0);
+    scene.position.set(model.orient.offset[0], model.orient.offset[1], model.orient.offset[2]);
+  }
   scene.updateMatrixWorld(true);
+  const stretchZ = model.stretch ?? 1;
+  const stretch = new THREE.Matrix4().makeScale(1, 1, stretchZ);
   const body: PartTemplate[] = [];
   const wheels: WheelTemplate[] = [];
-  const minY = spec.model.lightBar?.minY;
+  const minY = model.lightBar?.minY;
   for (const node of [...scene.children]) {
     const kind = nodeKind(node.name);
     const parts: PartTemplate[] = [];
+    let primitive = 0;
     node.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       const src = mesh.material as THREE.Material;
-      const { role, shade } = kind === "body" ? roleOf(spec, src.name) : { role: "other" as const, shade: 1 };
-      const offColor = displayColor(src);
-      const material = toLambert(src);
-      const matrix = mesh.matrixWorld.clone();
+      // Colourless OBJ conversions: name and colour each primitive from the catalogue.
+      const prim = model.primitives;
+      const name = prim ? (kind === "body" ? (prim.body[primitive] ?? src.name) : "Wheel") : src.name;
+      primitive++;
+      const { role, shade } = kind === "body" ? roleOf(spec, name) : { role: "other" as const, shade: 1 };
+      const offHex = prim ? (kind === "body" ? (prim.colors[name] ?? 0x8a8a8a) : prim.wheel) : null;
+      const offColor = offHex !== null ? new THREE.Color(offHex) : displayColor(src);
+      const material = offHex !== null ? flatMaterial(offHex) : toLambert(src);
+      if (offHex !== null) src.dispose();
+      // Body parts take the length stretch; wheels keep their shape (their pivots are stretched below).
+      const matrix = kind === "body" ? stretch.clone().multiply(mesh.matrixWorld) : mesh.matrixWorld.clone();
+      if (kind === "body" && model.lampMaterial && name === model.lampMaterial) {
+        // One lamp material front and back: headlights in front of the centre, tail lights behind.
+        const [rear, front] = splitGeometry(mesh.geometry, matrix, 2, 0);
+        if (front) parts.push({ geometry: front, material, role: "head", shade, matrix });
+        if (rear) parts.push({ geometry: rear, material, role: "tail", shade, matrix });
+        return;
+      }
       if (minY !== undefined && (role === "tail" || role === "barBlue")) {
         const [below, above] = splitByHeight(mesh.geometry, matrix, minY);
         // Lights above the roof line form the bar; tail-light material up there is its red half.
@@ -219,21 +278,52 @@ function templateFromGltf(spec: VehicleSpec, scene: THREE.Object3D): VehicleTemp
       body.push(...parts);
       continue;
     }
-    // Re-pivot: wheel parts are expressed relative to the wheel's own bounding-box centre.
-    const centre = partsBox(parts).getCenter(new THREE.Vector3());
-    const toCentre = new THREE.Matrix4().makeTranslation(-centre.x, -centre.y, -centre.z);
-    for (const p of parts) p.matrix = toCentre.clone().multiply(p.matrix);
-    wheels.push({ centre, front: kind !== "rear", parts });
+    // A front pair in one mesh becomes two wheels (left: +x, right: -x) that steer independently.
+    const groups: PartTemplate[][] = [];
+    if (kind === "frontPair") {
+      const left: PartTemplate[] = [];
+      const right: PartTemplate[] = [];
+      for (const p of parts) {
+        const [r, l] = splitGeometry(p.geometry, p.matrix, 0, 0);
+        if (l) left.push({ ...p, geometry: l });
+        if (r) right.push({ ...p, geometry: r });
+      }
+      groups.push(left, right);
+    } else groups.push(parts);
+    for (const g of groups) {
+      if (g.length === 0) continue;
+      // Re-pivot: wheel parts are expressed relative to the wheel's own bounding-box centre.
+      const centre = partsBox(g).getCenter(new THREE.Vector3());
+      const toCentre = new THREE.Matrix4().makeTranslation(-centre.x, -centre.y, -centre.z);
+      for (const p of g) p.matrix = toCentre.clone().multiply(p.matrix);
+      // The pivot follows the stretched body (the axle moves, the wheel keeps its size).
+      centre.z *= stretchZ;
+      wheels.push({ centre, front: kind !== "rear", parts: g });
+    }
   }
   body.push(...reverseLamps(body.filter((p) => p.role === "tail")));
+  if (model.roofBar) body.push(...roofBar(model.roofBar, stretchZ));
   return { body, wheels, source: "glb" };
+}
+
+/** Generated light bar (two lenses, red on the left / blue on the right) on the roof, model units. */
+function roofBar(bar: { y: number; z: number; half: number }, stretchZ: number): PartTemplate[] {
+  const base = new THREE.BoxGeometry(bar.half * 2 + 0.1, 0.05, 0.34);
+  const lens = new THREE.BoxGeometry(bar.half, 0.12, 0.3);
+  const z = bar.z * stretchZ;
+  return [
+    { geometry: base, material: flatMaterial(0x222428), role: "other", shade: 1, matrix: new THREE.Matrix4().makeTranslation(0, bar.y + 0.025, z) },
+    { geometry: lens, material: flatMaterial(0x5a1414), role: "barRed", shade: 1, matrix: new THREE.Matrix4().makeTranslation(bar.half / 2 + 0.02, bar.y + 0.11, z) },
+    { geometry: lens, material: flatMaterial(0x14245a), role: "barBlue", shade: 1, matrix: new THREE.Matrix4().makeTranslation(-bar.half / 2 - 0.02, bar.y + 0.11, z) },
+  ];
 }
 
 /** Warns (dev aid) when a GLB's measured body differs from the catalogue geometry. */
 function checkMeasurements(spec: VehicleSpec, t: VehicleTemplate): void {
-  const bb = partsBox(t.body.filter((p) => p.role !== "reverse"));
+  const bb = partsBox(t.body.filter((p) => p.role !== "reverse" && p.role !== "barRed" && p.role !== "barBlue" && p.material !== flatCache.get(0x222428)));
   const g = spec.model.geometry.body;
-  const off = Math.max(...[0, 1, 2].map((i) => Math.max(Math.abs(bb.min.getComponent(i) - g.min[i]), Math.abs(bb.max.getComponent(i) - g.max[i]))));
+  const k = [1, 1, spec.model.stretch ?? 1];
+  const off = Math.max(...[0, 1, 2].map((i) => Math.max(Math.abs(bb.min.getComponent(i) - g.min[i] * k[i]), Math.abs(bb.max.getComponent(i) - g.max[i] * k[i]))));
   if (off > 0.03) console.warn(`[vehicles] ${spec.key}: model bounds differ from the catalogue by ${off.toFixed(3)} m`, bb);
 }
 
@@ -280,8 +370,11 @@ function boxPart(w: number, h: number, d: number, x: number, y: number, z: numbe
 /** Box body + cylinder wheels laid out from the catalogue geometry (model units). */
 function buildFallback(spec: VehicleSpec): VehicleTemplate {
   const g = spec.model.geometry;
-  const [x0, y0, z0] = g.body.min;
-  const [x1, y1, z1] = g.body.max;
+  const k = spec.model.stretch ?? 1;
+  const [x0, y0] = g.body.min;
+  const [x1, y1] = g.body.max;
+  const z0 = g.body.min[2] * k;
+  const z1 = g.body.max[2] * k;
   const W = x1 - x0;
   const L = z1 - z0;
   const zc = (z0 + z1) / 2;
@@ -304,9 +397,9 @@ function buildFallback(spec: VehicleSpec): VehicleTemplate {
   return {
     body,
     wheels: [
-      { centre: new THREE.Vector3(0, cy, g.rearAxleZ), front: false, parts: [tyre(-track), tyre(track)] },
-      { centre: new THREE.Vector3(track, cy, g.frontAxleZ), front: true, parts: [tyre(0)] },
-      { centre: new THREE.Vector3(-track, cy, g.frontAxleZ), front: true, parts: [tyre(0)] },
+      { centre: new THREE.Vector3(0, cy, g.rearAxleZ * k), front: false, parts: [tyre(-track), tyre(track)] },
+      { centre: new THREE.Vector3(track, cy, g.frontAxleZ * k), front: true, parts: [tyre(0)] },
+      { centre: new THREE.Vector3(-track, cy, g.frontAxleZ * k), front: true, parts: [tyre(0)] },
     ],
     source: "fallback",
   };

@@ -230,6 +230,34 @@ input.nameInput {
 #toast.show {
   opacity: 1;
 }
+/* GTA-style location toast (street / campus building), bottom-right above the speedometer. */
+#placeToast {
+  position: absolute;
+  right: 26px;
+  bottom: 132px;
+  text-align: right;
+  opacity: 0;
+  transition: opacity 0.6s;
+  pointer-events: none;
+  text-shadow: 0 2px 3px rgba(0, 0, 0, 0.85), 0 0 1px #000;
+}
+#placeToast.show {
+  opacity: 1;
+}
+#placeName {
+  font-size: 28px;
+  font-weight: 800;
+  font-style: italic;
+  letter-spacing: 0.01em;
+  color: #fff;
+}
+#placeSub {
+  font-size: 15px;
+  font-weight: 700;
+  font-style: italic;
+  color: #f2d27a;
+  margin-top: 2px;
+}
 #mini {
   position: absolute;
   left: 16px;

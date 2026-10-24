@@ -46,6 +46,16 @@ export function landuseKind(tags: Tags): LanduseKind | null {
   return null;
 }
 
+/** Surface / sport of pitches and tracks, and whether a track is mapped as a line (area=no). */
+export function landuseDetails(tags: Tags): Pick<MapLanduse, "surface" | "sport" | "linear"> {
+  const out: Pick<MapLanduse, "surface" | "sport" | "linear"> = {};
+  if (tags.leisure !== "pitch" && tags.leisure !== "track") return out;
+  if (tags.sport) out.sport = tags.sport;
+  if (tags.surface) out.surface = tags.surface;
+  if (tags.leisure === "track" && tags.area === "no") out.linear = true;
+  return out;
+}
+
 /** Projects, clips, simplifies and orients a ring of node ids (null if degenerate). */
 export function ringFromNodes(ctx: BuildContext, ids: number[], minArea = 4): Ring | null {
   const pts = ids.map((id) => nodeXZ(ctx, id)).filter((p): p is Vec2 => p !== null);
@@ -60,7 +70,7 @@ export function ringFromNodes(ctx: BuildContext, ids: number[], minArea = 4): Ri
 export function extractLanduse(ctx: BuildContext): MapLanduse[] {
   const out: MapLanduse[] = [];
   const push = (kind: LanduseKind, tags: Tags, ring: Ring) =>
-    out.push({ kind, ...(tags.name ? { name: tags.name } : {}), area: Math.round(polygonArea(ring)), points: ring });
+    out.push({ kind, ...(tags.name ? { name: tags.name } : {}), ...landuseDetails(tags), area: Math.round(polygonArea(ring)), points: ring });
   for (const way of ctx.osm.ways) {
     const kind = way.tags && landuseKind(way.tags);
     if (!kind || !isClosed(way)) continue;

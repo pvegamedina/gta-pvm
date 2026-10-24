@@ -6,7 +6,7 @@
 export type VehicleMode = "player" | "ai" | "parked";
 
 /** Catalogue keys. They travel over the network as `CarState.type` (see resolveVehicleType for old strings). */
-export type VehicleTypeKey = "sedan" | "hatch" | "suv" | "sport" | "coupe" | "taxi" | "police";
+export type VehicleTypeKey = "sedan" | "hatch" | "suv" | "sport" | "coupe" | "taxi" | "police" | "bus" | "school_bus" | "ambulance";
 
 export type Vec3Tuple = readonly [number, number, number];
 
@@ -45,6 +45,25 @@ export interface VehicleModel {
    * height belong to the bar (flashing), the rest are ordinary tail lights.
    */
   lightBar?: { minY: number };
+  /**
+   * Re-orientation applied to the GLB scene before anything is measured or
+   * split: a yaw (rad) then a translation (model units), so that +z is
+   * forward and the body is centred on the origin (the geometry above is in
+   * this frame).
+   */
+  orient?: { rotateY: number; offset: Vec3Tuple };
+  /** Extra scale along the length applied to the body and the axle positions, not the wheels (stubby low-poly buses). */
+  stretch?: number;
+  /**
+   * Material names of the body primitives in order, with their display
+   * colours, for GLBs whose materials were lost in the OBJ conversion (the
+   * Public Transport Pack); "wheel" colours the wheel meshes.
+   */
+  primitives?: { body: readonly string[]; colors: Readonly<Record<string, number>>; wheel: number };
+  /** One material used for both head and tail lamps: triangles in front of the centre are headlights. */
+  lampMaterial?: string;
+  /** Generated roof light bar (model space): roof height, position along z and half width of each lamp. */
+  roofBar?: { y: number; z: number; half: number };
 }
 
 /** Pool a spawn draws from: moving traffic or parking slots. */
@@ -93,4 +112,8 @@ export interface VehicleSpec {
   spawn: Record<SpawnPool, number>;
   /** Has a light bar + siren (toggled with a long press of H). */
   siren: boolean;
+  /** Traffic only spawns it on main roads (primary / secondary / tertiary). */
+  mainRoadsOnly: boolean;
+  /** Traffic cruise-speed factor (buses drive slower). */
+  aiSpeed: number;
 }

@@ -3,10 +3,16 @@
 // lawns, all instanced from the Quaternius Ultimate Nature models (CC0).
 //
 // Two variants per species (random yaw/scale add the variety) keep the draw
-// calls down. Every model's sub-meshes are merged into ONE vertex-coloured geometry (they
-// only use flat colours), so a tree variant is a single InstancedMesh per
-// 240 m chunk: frustum culling (and the small sun-shadow frustum) skip far
-// chunks, and all vegetation shares one material.
+// calls down. Every model's sub-meshes are merged into ONE vertex-coloured
+// geometry (they only use flat colours) and all vegetation shares one
+// material.
+//
+// Trees (phase 4b LOD): each variant is two distance-banded InstancedMeshes
+// for the whole campus: the full model within TREE_LOD of the camera (with
+// shadows) and a ~40-triangle proxy (trunk + cone / crown in the model's own
+// colours) from there to TREE_VIEW, so the ~2k-triangle trees only cost
+// their full price up close. Bushes and lawn scatter keep 100-260 m chunks
+// hidden beyond their (short) draw distance.
 
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
@@ -16,6 +22,7 @@ import { bboxOf, pointInPolygon } from "../../map/geometry";
 import { createRoadIndex, nearestRoadPoint } from "../../map/queries";
 import { MODELS_URL, createGltfLoader, displayColor } from "../../assets/gltf";
 import type { CollisionGrid } from "../colliders";
+import { DistanceInstances } from "../distanceInstances";
 
 const NATURE_URL = `${MODELS_URL}/nature`;
 
@@ -48,6 +55,8 @@ const TREE_CHUNK = 260;
 const SCATTER_CHUNK = 100;
 /** Chunks farther than this from the player (m) are hidden: trees, bushes, scatter. */
 export const TREE_VIEW = 520;
+/** Trees closer than this (m) use the full model, farther ones the low-poly proxy. */
+export const TREE_LOD = 150;
 const BUSH_VIEW = 260;
 const SCATTER_VIEW = 120;
 
@@ -116,7 +125,69 @@ export function hash01(x: number, z: number, salt: number): number {
 
 export interface NatureBuild {
   group: THREE.Group;
-  stats: { trees: number; scatter: number; meshes: number; triangles: number };
+  /** Tree variants: full model near, proxy far. */
+  lods: { near: DistanceInstances; far: DistanceInstances; trisNear: number; trisFar: number }[];
+  stats: { trees: number; scatter: number; meshes: number; triangles: number; treeTrianglesNear: number; treeTrianglesFar: number };
+}
+
+/** Mean vertex colour of the part of a (vertex-coloured, y-up, standing) geometry selected by `pick`. */
+function meanColor(g: THREE.BufferGeometry, pick: (x: number, y: number, z: number) => boolean, fallback: number): THREE.Color {
+  const p = g.attributes.position;
+  const c = g.attributes.color;
+  let r = 0;
+  let gr = 0;
+  let b = 0;
+  let n = 0;
+  for (let i = 0; i < p.count; i++) {
+    if (!pick(p.getX(i), p.getY(i), p.getZ(i))) continue;
+    r += c.getX(i);
+    gr += c.getY(i);
+    b += c.getZ(i);
+    n++;
+  }
+  return n > 0 ? new THREE.Color(r / n, gr / n, b / n) : new THREE.Color(fallback);
+}
+
+function paint(g: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeometry {
+  const out = g.index ? g.toNonIndexed() : g;
+  for (const k of Object.keys(out.attributes)) if (k !== "position" && k !== "normal") out.deleteAttribute(k);
+  const n = out.attributes.position.count;
+  const arr = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    arr[i * 3] = color.r;
+    arr[i * 3 + 1] = color.g;
+    arr[i * 3 + 2] = color.b;
+  }
+  out.setAttribute("color", new THREE.BufferAttribute(arr, 3));
+  return out;
+}
+
+/**
+ * Low-poly stand-in for a tree model, in the model's own units (same
+ * instance matrices): a trunk plus a cone (pines), a flat crown (palms) or a
+ * round crown (broadleaf), coloured with the model's mean canopy / trunk colours.
+ */
+export function treeProxy(model: NatureModel, species: TreeSpecies): THREE.BufferGeometry {
+  const g = model.geometry;
+  if (!g.boundingBox) g.computeBoundingBox();
+  const bb = g.boundingBox!;
+  const h = bb.max.y - bb.min.y;
+  const half = Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z) / 2;
+  const canopy = meanColor(g, (_x, y) => y > h * 0.5, 0x4b7a2e);
+  const trunk = meanColor(g, (x, y, z) => y < h * 0.3 && Math.hypot(x, z) < half * 0.25, 0x6b4a2f);
+  const parts: THREE.BufferGeometry[] = [];
+  if (species === "pine") {
+    parts.push(paint(new THREE.CylinderGeometry(h * 0.03, h * 0.04, h * 0.3, 5).translate(0, h * 0.15, 0), trunk));
+    parts.push(paint(new THREE.ConeGeometry(half * 0.95, h * 0.82, 7).translate(0, h * 0.18 + h * 0.41, 0), canopy));
+  } else if (species === "palm") {
+    parts.push(paint(new THREE.CylinderGeometry(h * 0.025, h * 0.035, h * 0.85, 5).translate(0, h * 0.425, 0), trunk));
+    parts.push(paint(new THREE.IcosahedronGeometry(half * 0.85, 0).scale(1, 0.3, 1).translate(0, h * 0.86, 0), canopy));
+  } else {
+    parts.push(paint(new THREE.CylinderGeometry(h * 0.035, h * 0.05, h * 0.5, 5).translate(0, h * 0.25, 0), trunk));
+    const r = half * 0.9;
+    parts.push(paint(new THREE.IcosahedronGeometry(r, 0).scale(1, Math.min(1.2, (h * 0.42) / r), 1).translate(0, h * 0.62, 0), canopy));
+  }
+  return mergeGeometries(parts, false)!;
 }
 
 interface Instance {
@@ -132,6 +203,8 @@ interface Instance {
   /** Draw distance of this kind of plant. */
   view: number;
   chunk: number;
+  /** Tree species (null for lawn scatter). */
+  species: TreeSpecies | null;
 }
 
 /**
@@ -144,6 +217,12 @@ export function updateNatureVisibility(n: NatureBuild, x: number, z: number, all
     const c = m.userData.cull as { x: number; z: number; r: number } | undefined;
     if (!c) continue;
     m.visible = all || Math.hypot(c.x - x, c.z - z) < c.r;
+  }
+  for (const l of n.lods) {
+    l.near.update(x, z, all);
+    // Aerial views draw every full model instead of the proxies.
+    if (all) l.far.clear();
+    else l.far.update(x, z);
   }
 }
 
@@ -159,7 +238,7 @@ export function buildNature(map: CampusMap, assets: NatureAssets, height: (x: nu
     const scale = target / asset.height;
     const y = height(t.x, t.z);
     const view = t.species === "bush" ? BUSH_VIEW : TREE_VIEW;
-    instances.push({ model, x: t.x, y: y - 0.05, z: t.z, yaw: hash01(t.x, t.z, 3) * Math.PI * 2, scale, slim: sp.slim, shadow: sp.shadow, view, chunk: TREE_CHUNK });
+    instances.push({ model, x: t.x, y: y - 0.05, z: t.z, yaw: hash01(t.x, t.z, 3) * Math.PI * 2, scale, slim: sp.slim, shadow: sp.shadow, view, chunk: TREE_CHUNK, species: t.species });
     if (sp.trunk > 0) grid.addCirc(t.x, t.z, sp.trunk, y, 6);
     trees++;
   }
@@ -193,20 +272,12 @@ export function buildNature(map: CampusMap, assets: NatureAssets, height: (x: nu
       const asset = assets.get(pick.model);
       if (!asset) continue;
       const target = pick.height[0] + (pick.height[1] - pick.height[0]) * hash01(x, z, 14);
-      instances.push({ model: pick.model, x, y: height(x, z) - 0.03, z, yaw: hash01(x, z, 15) * Math.PI * 2, scale: target / asset.height, slim: 1, shadow: false, view: SCATTER_VIEW, chunk: SCATTER_CHUNK });
+      instances.push({ model: pick.model, x, y: height(x, z) - 0.03, z, yaw: hash01(x, z, 15) * Math.PI * 2, scale: target / asset.height, slim: 1, shadow: false, view: SCATTER_VIEW, chunk: SCATTER_CHUNK, species: null });
       placed++;
     }
     scatter += placed;
   }
 
-  // One InstancedMesh per (chunk, model).
-  const buckets = new Map<string, Instance[]>();
-  for (const inst of instances) {
-    const key = `${inst.chunk}:${Math.floor(inst.x / inst.chunk)},${Math.floor(inst.z / inst.chunk)}|${inst.model}|${inst.view}`;
-    let b = buckets.get(key);
-    if (!b) buckets.set(key, (b = []));
-    b.push(inst);
-  }
   const material = new THREE.MeshLambertMaterial({ vertexColors: true });
   const group = new THREE.Group();
   group.name = "nature";
@@ -215,6 +286,42 @@ export function buildNature(map: CampusMap, assets: NatureAssets, height: (x: nu
   const up = new THREE.Vector3(0, 1, 0);
   const pos = new THREE.Vector3();
   const scl = new THREE.Vector3();
+  const matrixOf = (inst: Instance) => {
+    q.setFromAxisAngle(up, inst.yaw);
+    return new THREE.Matrix4().compose(pos.set(inst.x, inst.y, inst.z), q, scl.set(inst.scale * inst.slim, inst.scale, inst.scale * inst.slim));
+  };
+
+  // Trees: one near (full model) + one far (proxy) distance-banded mesh per variant.
+  const lods: NatureBuild["lods"] = [];
+  const treeModels = new Map<string, { species: TreeSpecies; list: Instance[] }>();
+  for (const inst of instances) {
+    if (inst.species === null || inst.species === "bush") continue;
+    let e = treeModels.get(inst.model);
+    if (!e) treeModels.set(inst.model, (e = { species: inst.species, list: [] }));
+    e.list.push(inst);
+  }
+  for (const [model, { species, list }] of treeModels) {
+    const asset = assets.get(model)!;
+    const items = list.map((inst) => ({ matrix: matrixOf(inst), x: inst.x, z: inst.z }));
+    const near = new DistanceInstances(asset.geometry, material, items, 0, TREE_LOD, 8);
+    const proxy = treeProxy(asset, species);
+    const far = new DistanceInstances(proxy, material, items, TREE_LOD, TREE_VIEW, 8);
+    near.mesh.castShadow = SPECIES[species].shadow;
+    near.mesh.name = `nature:tree:${model}`;
+    far.mesh.name = `nature:treeProxy:${model}`;
+    group.add(near.mesh, far.mesh);
+    lods.push({ near, far, trisNear: asset.geometry.attributes.position.count / 3, trisFar: proxy.attributes.position.count / 3 });
+  }
+
+  // Bushes and scatter: one InstancedMesh per (chunk, model).
+  const buckets = new Map<string, Instance[]>();
+  for (const inst of instances) {
+    if (inst.species !== null && inst.species !== "bush") continue;
+    const key = `${inst.chunk}:${Math.floor(inst.x / inst.chunk)},${Math.floor(inst.z / inst.chunk)}|${inst.model}|${inst.view}`;
+    let b = buckets.get(key);
+    if (!b) buckets.set(key, (b = []));
+    b.push(inst);
+  }
   let triangles = 0;
   for (const [key, list] of buckets) {
     const asset = assets.get(list[0].model)!;
@@ -235,5 +342,16 @@ export function buildNature(map: CampusMap, assets: NatureAssets, height: (x: nu
     group.add(mesh);
     triangles += (asset.geometry.attributes.position.count / 3) * list.length;
   }
-  return { group, stats: { trees, scatter, meshes: group.children.length, triangles: Math.round(triangles) } };
+  // Totals if every tree were drawn as the full model / as the proxy.
+  let treeTrianglesNear = 0;
+  let treeTrianglesFar = 0;
+  for (const l of lods) {
+    treeTrianglesNear += l.trisNear * l.near.mesh.instanceMatrix.count;
+    treeTrianglesFar += l.trisFar * l.far.mesh.instanceMatrix.count;
+  }
+  return {
+    group,
+    lods,
+    stats: { trees, scatter, meshes: group.children.length, triangles: Math.round(triangles), treeTrianglesNear: Math.round(treeTrianglesNear), treeTrianglesFar: Math.round(treeTrianglesFar) },
+  };
 }

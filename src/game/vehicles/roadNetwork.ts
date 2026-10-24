@@ -96,6 +96,8 @@ export class RoadNetwork {
   /** Per junction: reference bearing used to split approaches into two phase groups. */
   private junctionRef: number[];
   private readonly laneCache = new Map<number, LanePath>();
+  /** Per edge: metres from the lane end back to the painted stop line (world/campus/markings.ts). */
+  private readonly setbacks = new Map<number, number>();
   readonly junctions: readonly MapTrafficLight[];
 
   constructor(src: NetworkSource) {
@@ -274,6 +276,16 @@ export class RoadNetwork {
     return this.junctionOf(edge.from) === j ? -1 : j;
   }
 
+  /** Distance (m) from the end of the edge's lanes back to its stop line (0 when unpainted). */
+  stopSetback(e: number): number {
+    return this.setbacks.get(e) ?? 0;
+  }
+
+  setStopSetback(e: number, metres: number): void {
+    if (metres > 0) this.setbacks.set(e, metres);
+    else this.setbacks.delete(e);
+  }
+
   /** Signal phase group (0/1) of an approach: roughly perpendicular approaches alternate. */
   approachGroup(e: number): 0 | 1 {
     const j = this.stopJunction(e);
@@ -373,7 +385,7 @@ export function driverPosition(d: Driver, out: { x: number; z: number; yaw: numb
 /** Metres to the stop line of the signalled junction this lane enters (Infinity when none / on the connector). */
 export function distanceToStop(d: Driver, net: RoadNetwork): number {
   if (d.onLink || net.stopJunction(d.edge) < 0) return Infinity;
-  return d.path.length - d.s;
+  return d.path.length - d.s - net.stopSetback(d.edge);
 }
 
 /** The path `ahead` metres on (entering the connector / next lane when needed) and the arc length on it. */

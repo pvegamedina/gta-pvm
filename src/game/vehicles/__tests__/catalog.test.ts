@@ -5,12 +5,16 @@ import {
   VEHICLE_TYPE_KEYS,
   colliderOffsets,
   pickTint,
+  pickTrafficType,
   pickVehicleType,
   pushShare,
   resolveVehicleType,
   vehicleSpec,
 } from "../catalog";
 import { ENGINE_PROFILES } from "../../audio/engine";
+
+/** The passenger cars (the public-transport vehicles have their own size rules). */
+const CARS = ["sedan", "hatch", "suv", "sport", "coupe", "taxi", "police"] as const;
 
 /** Deterministic stand-in for Math.random: replays the given values in a loop. */
 function seq(...values: number[]): () => number {
@@ -20,7 +24,7 @@ function seq(...values: number[]): () => number {
 
 describe("vehicle catalogue", () => {
   it("lists every Quaternius car with a model file under /models/vehicles", () => {
-    expect(VEHICLE_TYPE_KEYS).toEqual(["sedan", "hatch", "suv", "sport", "coupe", "taxi", "police"]);
+    expect(VEHICLE_TYPE_KEYS).toEqual(["sedan", "hatch", "suv", "sport", "coupe", "taxi", "police", "bus", "school_bus", "ambulance"]);
     for (const k of VEHICLE_TYPE_KEYS) {
       expect(VEHICLE_CATALOG[k].key).toBe(k);
       expect(VEHICLE_CATALOG[k].model.file).toMatch(/^\/models\/vehicles\/[a-z0-9_]+\.glb$/);
@@ -40,7 +44,7 @@ describe("vehicle catalogue", () => {
   });
 
   it("keeps every car at a plausible real size", () => {
-    for (const k of VEHICLE_TYPE_KEYS) {
+    for (const k of CARS) {
       const s = VEHICLE_CATALOG[k];
       expect(s.L, k).toBeGreaterThan(3.6);
       expect(s.L, k).toBeLessThan(4.8);
@@ -72,8 +76,8 @@ describe("vehicle catalogue", () => {
     expect(VEHICLE_CATALOG.taxi.engine).toBe("taxi");
   });
 
-  it("gives only the police car a siren and keeps taxi/police liveries untinted", () => {
-    for (const k of VEHICLE_TYPE_KEYS) expect(VEHICLE_CATALOG[k].siren, k).toBe(k === "police");
+  it("gives only the police car and the ambulance a siren and keeps liveries untinted", () => {
+    for (const k of VEHICLE_TYPE_KEYS) expect(VEHICLE_CATALOG[k].siren, k).toBe(k === "police" || k === "ambulance");
     expect(VEHICLE_CATALOG.taxi.tint).toBeNull();
     expect(VEHICLE_CATALOG.police.tint).toBeNull();
     expect(VEHICLE_CATALOG.sedan.tint).toBe(PAINT_COLORS);
@@ -81,6 +85,67 @@ describe("vehicle catalogue", () => {
 
   it("puts the driver's door on the left (+x local) side", () => {
     for (const k of VEHICLE_TYPE_KEYS) expect(VEHICLE_CATALOG[k].door.side).toBe(1);
+  });
+});
+
+describe("public transport", () => {
+  const { bus, school_bus, ambulance, sedan } = VEHICLE_CATALOG;
+
+  it("stretches the stubby low-poly bodies to real lengths (stretch applies to L, zc and the wheelbase)", () => {
+    for (const s of [bus, school_bus, ambulance]) {
+      const g = s.model.geometry;
+      const k = s.model.stretch ?? 1;
+      expect(k).toBeGreaterThan(1);
+      expect(s.L).toBeCloseTo((g.body.max[2] - g.body.min[2]) * s.model.scale * k, 5);
+      expect(s.wb).toBeCloseTo((g.frontAxleZ - g.rearAxleZ) * s.model.scale * k, 5);
+      expect(s.W).toBeCloseTo((g.body.max[0] - g.body.min[0]) * s.model.scale, 5);
+    }
+  });
+
+  it("has bus, school bus and ambulance at plausible sizes", () => {
+    expect(bus.L).toBeGreaterThan(10.8);
+    expect(bus.L).toBeLessThan(12.2);
+    expect(school_bus.L).toBeGreaterThan(9.8);
+    expect(school_bus.L).toBeLessThan(11.2);
+    expect(ambulance.L).toBeGreaterThan(5.5);
+    expect(ambulance.L).toBeLessThan(6.5);
+    for (const s of [bus, school_bus, ambulance]) {
+      expect(s.W, s.key).toBeGreaterThan(2.1);
+      expect(s.W, s.key).toBeLessThan(2.7);
+      expect(s.H, s.key).toBeGreaterThan(2.2);
+      expect(s.H, s.key).toBeLessThan(3.3);
+    }
+  });
+
+  it("uses the diesel profiles, more collision circles and a higher, farther chase camera", () => {
+    expect(bus.engine).toBe("bus");
+    expect(school_bus.engine).toBe("bus");
+    expect(ambulance.engine).toBe("ambulance");
+    expect(bus.offs.length).toBeGreaterThan(4);
+    for (const s of [bus, school_bus, ambulance]) {
+      expect(s.camera.height, s.key).toBeGreaterThan(sedan.camera.height);
+      expect(s.camera.distance, s.key).toBeGreaterThan(sedan.camera.distance);
+      expect(s.mass, s.key).toBeGreaterThan(sedan.mass);
+      expect(s.max, s.key).toBeLessThan(sedan.max + 1);
+    }
+  });
+
+  it("keeps buses on main roads, slower than cars, and never parks them", () => {
+    for (const s of [bus, school_bus]) {
+      expect(s.mainRoadsOnly, s.key).toBe(true);
+      expect(s.aiSpeed, s.key).toBeLessThan(1);
+      expect(s.spawn.parked, s.key).toBe(0);
+      expect(s.spawn.traffic, s.key).toBeGreaterThan(0);
+    }
+    expect(sedan.mainRoadsOnly).toBe(false);
+    expect(sedan.aiSpeed).toBe(1);
+    expect(ambulance.spawn.traffic).toBeGreaterThan(0);
+    expect(ambulance.spawn.traffic).toBeLessThan(VEHICLE_CATALOG.police.spawn.traffic + 1e-9);
+  });
+
+  it("places the doors near the front of long vehicles", () => {
+    expect(bus.door.z).toBeGreaterThan(bus.L / 4);
+    expect(bus.door.z).toBeLessThan(bus.L / 2);
   });
 });
 
@@ -113,14 +178,14 @@ describe("pickVehicleType (weighted spawns)", () => {
   it("makes police rare and taxis common-ish in traffic", () => {
     const w = (k: keyof typeof VEHICLE_CATALOG) => VEHICLE_CATALOG[k].spawn.traffic;
     expect(w("police")).toBeGreaterThan(0);
-    for (const k of VEHICLE_TYPE_KEYS) if (k !== "police") expect(w(k), k).toBeGreaterThan(w("police"));
+    for (const k of CARS) if (k !== "police") expect(w(k), k).toBeGreaterThan(w("police"));
     expect(w("taxi")).toBeGreaterThanOrEqual(3 * w("police"));
   });
 
   it("walks the cumulative weights in catalogue order", () => {
     const total = VEHICLE_TYPE_KEYS.reduce((a, k) => a + VEHICLE_CATALOG[k].spawn.traffic, 0);
     expect(pickVehicleType(seq(0), "traffic")).toBe("sedan");
-    expect(pickVehicleType(seq(0.999999), "traffic")).toBe("police");
+    expect(pickVehicleType(seq(0.999999), "traffic")).toBe("ambulance");
     const sedanShare = VEHICLE_CATALOG.sedan.spawn.traffic / total;
     expect(pickVehicleType(seq(sedanShare - 1e-6), "traffic")).toBe("sedan");
     expect(pickVehicleType(seq(sedanShare + 1e-6), "traffic")).toBe("hatch");
@@ -185,5 +250,22 @@ describe("pushShare (car-vs-car separation)", () => {
   it("stays within sane bounds", () => {
     expect(pushShare(1, 1e6)).toBeLessThanOrEqual(0.95);
     expect(pushShare(1e6, 1)).toBeGreaterThanOrEqual(0.3);
+  });
+});
+
+describe("pickTrafficType (road-aware spawns)", () => {
+  it("never puts buses on minor roads", () => {
+    for (let i = 0; i < 200; i++) {
+      const k = pickTrafficType(seq(i / 200), "residential");
+      expect(VEHICLE_CATALOG[k].mainRoadsOnly, k).toBe(false);
+    }
+  });
+
+  it("can spawn buses on main roads, with their traffic weight", () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 400; i++) seen.add(pickTrafficType(seq(i / 400), "secondary"));
+    expect(seen.has("bus")).toBe(true);
+    expect(seen.has("school_bus")).toBe(true);
+    expect(seen.has("sedan")).toBe(true);
   });
 });

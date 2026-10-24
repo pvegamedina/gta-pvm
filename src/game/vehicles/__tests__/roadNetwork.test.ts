@@ -177,6 +177,17 @@ describe("Driver (path following)", () => {
     expect(distanceToStop(out, net)).toBe(Infinity);
   });
 
+  it("moves the stop line back by the approach's painted setback", () => {
+    const e = edgeOf(1, 0);
+    const d = createDriver(net, e, 0, 10, seq([0.5]));
+    const p = net.lanePath(e, 0);
+    expect(net.stopSetback(e)).toBe(0);
+    net.setStopSetback(e, 4.4);
+    expect(net.stopSetback(e)).toBe(4.4);
+    expect(distanceToStop(d, net)).toBeCloseTo(p.length - 10 - 4.4, 6);
+    net.setStopSetback(e, 0);
+  });
+
   it("looks ahead into the next path to see upcoming turns", () => {
     // Force a left turn: next edge is 0 -> 4 (south) when heading west.
     const d = createDriver(net, edgeOf(1, 0), 0, 0, () => 0);

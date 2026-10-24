@@ -39,6 +39,10 @@ export default function Game() {
         </div>
         <div id="prompt" />
         <div id="toast" />
+        <div id="placeToast">
+          <div id="placeName" />
+          <div id="placeSub" />
+        </div>
         <canvas id="mini" width={180} height={180} />
         <div id="speedo">
           <div id="spdNum">0</div>

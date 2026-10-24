@@ -4,15 +4,16 @@
 // bends, keeps its distance to the car / on-foot player ahead and stops at
 // red lights at the mapped signalled junctions. Cars are spawned around the
 // player and recycled when they drift far away. Parked cars line residential
-// streets and fill the mapped car parks.
+// streets and fill the mapped car parks. Buses only appear on main roads and
+// cruise slower; an ambulance now and then runs with its siren on.
 // Uses Math.random() deliberately — traffic is local-only ambient behaviour.
 
 import * as THREE from "three";
 import { angDiff, angLerp, clamp } from "../core/math";
 import { groundY } from "../world/ground";
 import { addVeh, removeVeh, type Vehicle } from "./meshes";
-import { VEHICLE_CATALOG, pickTint, pickVehicleType } from "./catalog";
-import type { SpawnPool } from "./types";
+import { VEHICLE_CATALOG, isMainRoad, pickTint, pickTrafficType, pickVehicleType } from "./catalog";
+import type { SpawnPool, VehicleTypeKey } from "./types";
 import {
   advanceDriver,
   createDriver,
@@ -74,9 +75,13 @@ const SPAWN_WEIGHT: Partial<Record<RoadClass, number>> = {
   service: 0.3,
 };
 
-/** A random catalogue vehicle for `pool`, with a random body tint when its type takes one. */
-function addRandomVeh(scene: THREE.Scene, pool: SpawnPool, x: number, z: number, yaw: number, mode: "ai" | "parked"): Vehicle {
-  const type = pickVehicleType(Math.random, pool);
+/** Share of traffic ambulances that drive with the light bar and siren on. */
+const AMBULANCE_SIREN_SHARE = 0.4;
+/** Cruise-speed boost of an emergency vehicle running its siren. */
+const SIREN_SPEED = 1.2;
+
+/** A catalogue vehicle (random for `pool` unless `type` is given), with a random body tint when its type takes one. */
+function addRandomVeh(scene: THREE.Scene, pool: SpawnPool, x: number, z: number, yaw: number, mode: "ai" | "parked", type: VehicleTypeKey = pickVehicleType(Math.random, pool)): Vehicle {
   return addVeh(scene, type, pickTint(VEHICLE_CATALOG[type], Math.random) ?? LIVERY_COLOR, x, z, yaw, mode);
 }
 
@@ -109,7 +114,7 @@ export function updateAI(v: Vehicle, dt: number, vehicles: Vehicle[], net: RoadN
   const a = v.ai!;
   const d = a.driver;
   const prevYaw = v.yaw;
-  let target = cruiseFor(net, d.onLink && d.nextEdge >= 0 ? d.nextEdge : d.edge) * a.temper;
+  let target = cruiseFor(net, d.onLink && d.nextEdge >= 0 ? d.nextEdge : d.edge) * a.temper * v.spec.aiSpeed * (v.siren ? SIREN_SPEED : 1);
 
   // Bends: limit speed so the lateral acceleration stays reasonable.
   const look = 8 + v.speed * 1.4;
@@ -122,7 +127,8 @@ export function updateAI(v: Vehicle, dt: number, vehicles: Vehicle[], net: RoadN
   if (dStopRaw < 60) {
     const j = net.stopJunction(d.edge);
     const st = signalState(net.junctionOffset(j), net.approachGroup(d.edge), t);
-    const dStop = dStopRaw - 1.5;
+    // Distance the car's centre can still cover: its nose stops just behind the stop line.
+    const dStop = dStopRaw - (v.spec.L / 2 + 0.3);
     if (dStop > -1 && (st === "R" || (st === "Y" && dStop > (v.speed * v.speed) / 10))) {
       target = Math.min(target, Math.sqrt(Math.max(0, dStop) * 2 * STOP_DECEL));
       red = true;
@@ -219,9 +225,10 @@ function randomEdge(net: RoadNetwork): number {
 }
 
 /** Spawns one AI car somewhere SPAWN_MIN..SPAWN_MAX m from (fx, fz); null if no free spot was found. */
-export function spawnAICar(scene: THREE.Scene, vehicles: Vehicle[], net: RoadNetwork, fx: number, fz: number, minDist = SPAWN_MIN): Vehicle | null {
-  for (let tries = 0; tries < 40; tries++) {
+export function spawnAICar(scene: THREE.Scene, vehicles: Vehicle[], net: RoadNetwork, fx: number, fz: number, minDist = SPAWN_MIN, forced?: VehicleTypeKey): Vehicle | null {
+  for (let tries = 0; tries < (forced ? 400 : 40); tries++) {
     const e = randomEdge(net);
+    if (forced && VEHICLE_CATALOG[forced].mainRoadsOnly && !isMainRoad(net.roads[net.edges[e].road].class)) continue;
     const lane = Math.floor(Math.random() * net.lanesOf(e));
     const path = net.lanePath(e, lane);
     const s = Math.random() * path.length;
@@ -229,11 +236,15 @@ export function spawnAICar(scene: THREE.Scene, vehicles: Vehicle[], net: RoadNet
     driverPosition(driver, _pos);
     const dist = Math.hypot(_pos.x - fx, _pos.z - fz);
     if (dist < minDist || dist > SPAWN_MAX) continue;
-    if (vehicles.some((v) => Math.abs(v.x - _pos.x) < 12 && Math.abs(v.z - _pos.z) < 12)) continue;
-    const v = addRandomVeh(scene, "traffic", _pos.x, _pos.z, _pos.yaw, "ai");
+    if (vehicles.some((v) => Math.abs(v.x - _pos.x) < 14 && Math.abs(v.z - _pos.z) < 14)) continue;
+    const type = forced ?? pickTrafficType(Math.random, net.roads[net.edges[e].road].class);
+    const v = addRandomVeh(scene, "traffic", _pos.x, _pos.z, _pos.yaw, "ai", type);
     const temper = 0.85 + Math.random() * 0.3;
-    v.ai = { driver, temper, acc: 3.5 + Math.random() * 2, stuck: 0, ghost: 0 };
-    v.speed = cruiseFor(net, e) * temper * 0.7;
+    // Heavy vehicles pull away gently.
+    const acc = Math.min(3.5 + Math.random() * 2, v.spec.acc * 0.8);
+    v.ai = { driver, temper, acc, stuck: 0, ghost: 0 };
+    if (type === "ambulance" && Math.random() < AMBULANCE_SIREN_SHARE) v.siren = true;
+    v.speed = cruiseFor(net, e) * temper * v.spec.aiSpeed * 0.7;
     v.y = groundY(v.x, v.z);
     settleOnGround(v, 0, true);
     vehicles.push(v);

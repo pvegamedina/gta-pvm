@@ -5,7 +5,6 @@
 
 import type { CampusMap } from "../../map/loader";
 import type { LanduseKind, MapBuilding, MapRoad, RoadClass, Vec2 } from "../../map/types";
-import { pointInPolygon } from "../../map/geometry";
 
 export interface RoadStroke {
   color: string;
@@ -19,7 +18,7 @@ export interface MapPalette {
   blotches?: string[];
   landuse: Partial<Record<LanduseKind, string>>;
   pitchLines?: string;
-  /** Ring colour of running tracks that do not enclose a pitch (jogging paths); athletics tracks use landuse.track. */
+  /** Colour of running loops mapped as lines (area=no, paved jogging paths); athletics (tartan) tracks use landuse.track. */
   jogging?: string;
   road(r: MapRoad): RoadStroke | null;
   building(b: MapBuilding): string | null;
@@ -86,8 +85,8 @@ export const GROUND_PALETTE: MapPalette = {
     allotments: "#4d5a2f",
     farmland: "#6b6440",
   },
-  pitchLines: "rgba(245,245,240,0.85)",
-  jogging: "#7d6a4a",
+  // Pitch lines are draped geometry now (landuse.ts), sharper than this 0.6 m/px painting.
+  jogging: "#77716a",
   road(r) {
     if (r.bridge) return null;
     if (isDrivable(r.class)) return { color: "#333538", width: r.width + 1.2 };
@@ -185,23 +184,19 @@ export function paintMap(map: CampusMap, palette: MapPalette, width: number, hei
 
   // Landuse: big areas first so small ones (pools in parks) stay visible.
   const lu = [...map.landuse].sort((a, b) => b.area - a.area);
-  const pitches = map.landuse.filter((l) => l.kind === "pitch");
-  /** An athletics track encloses a pitch; otherwise it is a jogging ring around a park. */
-  const athletics = (ring: readonly Vec2[]) =>
-    pitches.some((p) => {
-      const c = p.points.reduce((acc, q) => [acc[0] + q[0] / p.points.length, acc[1] + q[1] / p.points.length], [0, 0]);
-      return pointInPolygon(c[0], c[1], ring);
-    });
   for (const l of lu) {
     const col = palette.landuse[l.kind];
     if (!col) continue;
     polygon(l.points);
     if (l.kind === "track") {
-      // OSM running tracks are mapped as areas: paint a 7 m ring around a lawn infield.
+      // The infield is a field either way. A tartan track is an athletics ring (7 m, track colour);
+      // a loop mapped as a line (area=no, e.g. the paved jogging loop in the middle of the campus)
+      // is a 3.5 m path in the jogging colour, not a red ring.
       x.fillStyle = palette.landuse.grass ?? palette.base;
       x.fill();
-      x.strokeStyle = athletics(l.points) ? col : (palette.jogging ?? col);
-      x.lineWidth = 7 * scale;
+      const athletics = !l.linear && (l.surface === undefined || l.surface === "tartan");
+      x.strokeStyle = athletics ? col : (palette.jogging ?? col);
+      x.lineWidth = (athletics ? 7 : 3.5) * scale;
       x.stroke();
       continue;
     }

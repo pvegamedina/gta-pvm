@@ -20,9 +20,11 @@ const H: HitInfo = { nx: 0, nz: 0, pen: 0 };
 
 export function collideCar(v: Vehicle, grid: CollisionGrid, vehicles: Vehicle[]): number {
   let impact = 0;
+  // Long vehicles (buses) reach farther than a car from their centre.
+  const reach = Math.max(6, v.spec.L / 2 + v.spec.rad + 0.5);
   for (let it = 0; it < 2; it++) {
     for (const o of v.spec.offs) {
-      grid.each(v.x, v.z, 6, (c) => {
+      grid.each(v.x, v.z, reach, (c) => {
         const cx = v.x + Math.sin(v.yaw) * o;
         const cz = v.z + Math.cos(v.yaw) * o;
         if (circleVsCollider(c, cx, cz, v.spec.rad, H)) {
@@ -40,7 +42,8 @@ export function collideCar(v: Vehicle, grid: CollisionGrid, vehicles: Vehicle[])
       });
     }
     for (const u of vehicles) {
-      if (u === v || Math.abs(u.x - v.x) > 7 || Math.abs(u.z - v.z) > 7) continue;
+      const near = (v.spec.L + u.spec.L) / 2 + 2;
+      if (u === v || Math.abs(u.x - v.x) > near || Math.abs(u.z - v.z) > near) continue;
       for (const o of v.spec.offs) {
         for (const q of u.spec.offs) {
           const ax = v.x + Math.sin(v.yaw) * o;

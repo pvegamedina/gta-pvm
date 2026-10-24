@@ -6,7 +6,9 @@
 //   1. drop `public/models/vehicles/<name>.glb` (body + BackWheels +
 //      FrontLeftWheel + FrontRightWheel nodes, +z forward),
 //   2. add its key to VehicleTypeKey (types.ts) and an entry below with the
-//      measured geometry (node translation + scale x accessor bounds),
+//      measured geometry (node translation + scale x accessor bounds; GLBs
+//      that are not +z forward / centred get an "orient", short low-poly
+//      bodies a "stretch", colourless OBJ conversions "primitives" colours),
 //   3. give it an engine profile key (audio/engine.ts already has bus /
 //      ambulance) and spawn weights.
 //
@@ -44,6 +46,9 @@ interface CatalogEntry {
   handling?: Partial<typeof BASE_HANDLING>;
   camera?: { height: number; distance: number };
   siren?: boolean;
+  door?: { side: 1 | -1; z: number };
+  mainRoadsOnly?: boolean;
+  aiSpeed?: number;
 }
 
 function geometry(body: ModelGeometry["body"], frontAxleZ: number, rearAxleZ: number, wheelRadius: number, wheelBottom: number): ModelGeometry {
@@ -168,6 +173,93 @@ const ENTRIES: Record<VehicleTypeKey, CatalogEntry> = {
     camera: { height: 1.5, distance: 8.5 },
     siren: true,
   },
+  // Quaternius "Public Transport Pack" (CC0). The low-poly bodies are short for
+  // their width, so they are stretched along their length (wheels keep their size).
+  bus: {
+    name: "Autobús",
+    model: {
+      file: "/models/vehicles/bus.glb",
+      scale: 1.5,
+      stretch: 1.85,
+      orient: { rotateY: Math.PI / 2, offset: [0, 0, 1.765] },
+      geometry: geometry({ min: [-0.872, -1.001, -2.043], max: [0.872, 0.555, 2.043] }, 1.425, -1.423, 0.165, -1.122),
+      paint: paint(),
+      primitives: {
+        body: ["Bottom", "Windows", "Details", "Bumper", "Lights", "Top"],
+        colors: { Bottom: 0xb51f2b, Windows: 0x1d2a33, Details: 0x2a2c2e, Bumper: 0x2b2b2d, Lights: 0xd9d4c0, Top: 0xf2f2ee },
+        wheel: 0x1c1c1e,
+      },
+      lampMaterial: "Lights",
+    },
+    mass: 12000,
+    max: 24,
+    acc: 4.5,
+    engine: "bus",
+    tint: null,
+    spawn: { traffic: 3, parked: 0 },
+    handling: { brake: 14, steerLock: 0.6, steerLockFast: 0.12, steerRate: 1.9, steerReturn: 3, reverseMax: 5 },
+    camera: { height: 3.6, distance: 15.5 },
+    door: { side: 1, z: 4.1 },
+    mainRoadsOnly: true,
+    aiSpeed: 0.78,
+  },
+  school_bus: {
+    name: "Autobús escolar",
+    model: {
+      file: "/models/vehicles/school_bus.glb",
+      scale: 1.3,
+      stretch: 1.75,
+      orient: { rotateY: Math.PI / 2, offset: [0, 0, 1.504] },
+      geometry: geometry({ min: [-0.939, -1.001, -2.304], max: [0.939, 1.071, 2.304] }, 1.878, -1.684, 0.165, -1.122),
+      paint: paint(),
+      primitives: {
+        body: ["Yellow", "Windows", "Details", "Bumper", "Lights"],
+        colors: { Yellow: 0xf2b705, Windows: 0x1d2a33, Details: 0x1a1a1a, Bumper: 0x1f1f1f, Lights: 0xd9d4c0 },
+        wheel: 0x1c1c1e,
+      },
+      lampMaterial: "Lights",
+    },
+    mass: 10000,
+    max: 24,
+    acc: 4.8,
+    engine: "bus",
+    tint: null,
+    spawn: { traffic: 1.5, parked: 0 },
+    handling: { brake: 15, steerLock: 0.6, steerLockFast: 0.13, steerRate: 2, steerReturn: 3.2, reverseMax: 5 },
+    camera: { height: 3.3, distance: 14 },
+    door: { side: 1, z: 3.6 },
+    mainRoadsOnly: true,
+    aiSpeed: 0.8,
+  },
+  ambulance: {
+    name: "Ambulancia",
+    model: {
+      file: "/models/vehicles/ambulance.glb",
+      scale: 0.8,
+      stretch: 1.3,
+      orient: { rotateY: 0, offset: [0, 0, -0.768] },
+      geometry: geometry({ min: [-1.419, -0.147, -2.858], max: [1.419, 2.503, 2.858] }, 1.923, -1.747, 0.282, -0.411),
+      paint: paint(),
+      primitives: {
+        body: ["White", "Red", "Windows", "Bumper", "Lights", "Grey"],
+        colors: { White: 0xf4f4f2, Red: 0xd21f1f, Windows: 0x1d2a33, Bumper: 0x2b2b2d, Lights: 0xd9d4c0, Grey: 0x8c9094 },
+        wheel: 0x1c1c1e,
+      },
+      lampMaterial: "Lights",
+      roofBar: { y: 2.503, z: 0.25, half: 0.42 },
+    },
+    mass: 3500,
+    max: 38,
+    acc: 9,
+    engine: "ambulance",
+    tint: null,
+    spawn: { traffic: 1, parked: 0 },
+    handling: { brake: 22, steerLock: 0.6, steerRate: 2.8 },
+    camera: { height: 2.4, distance: 10.5 },
+    door: { side: 1, z: 1.4 },
+    siren: true,
+    aiSpeed: 1.05,
+  },
 };
 
 /**
@@ -187,9 +279,11 @@ export function colliderOffsets(L: number, W: number, zc: number): { rad: number
 
 function buildSpec(key: VehicleTypeKey, e: CatalogEntry): VehicleSpec {
   const { scale: s, geometry: g } = e.model;
-  const L = (g.body.max[2] - g.body.min[2]) * s;
+  // The stretch lengthens the body (and moves the axles) but not the wheels.
+  const k = e.model.stretch ?? 1;
+  const L = (g.body.max[2] - g.body.min[2]) * s * k;
   const W = (g.body.max[0] - g.body.min[0]) * s;
-  const zc = ((g.body.max[2] + g.body.min[2]) / 2) * s;
+  const zc = ((g.body.max[2] + g.body.min[2]) / 2) * s * k;
   const { rad, offs } = colliderOffsets(L, W, zc);
   return {
     key,
@@ -200,7 +294,7 @@ function buildSpec(key: VehicleTypeKey, e: CatalogEntry): VehicleSpec {
     H: (g.body.max[1] - g.wheelBottom) * s,
     zc,
     wr: g.wheelRadius * s,
-    wb: (g.frontAxleZ - g.rearAxleZ) * s,
+    wb: (g.frontAxleZ - g.rearAxleZ) * s * k,
     mass: e.mass,
     max: e.max,
     acc: e.acc,
@@ -209,11 +303,13 @@ function buildSpec(key: VehicleTypeKey, e: CatalogEntry): VehicleSpec {
     engine: e.engine,
     rad,
     offs,
-    door: DEFAULT_DOOR,
+    door: e.door ?? DEFAULT_DOOR,
     camera: e.camera ?? DEFAULT_CAMERA,
     tint: e.tint,
     spawn: e.spawn,
     siren: e.siren ?? false,
+    mainRoadsOnly: e.mainRoadsOnly ?? false,
+    aiSpeed: e.aiSpeed ?? 1,
   };
 }
 
@@ -265,4 +361,25 @@ export function pickTint(spec: VehicleSpec, rand: () => number): number | null {
  */
 export function pushShare(m: number, other: number): number {
   return Math.min(0.95, Math.max(0.3, other / (m + other) + 0.2));
+}
+
+/** Road classes where buses run (and get spawned). */
+const MAIN_ROADS: ReadonlySet<string> = new Set(["primary", "primary_link", "secondary", "secondary_link", "tertiary", "tertiary_link", "trunk", "trunk_link"]);
+
+export function isMainRoad(roadClass: string): boolean {
+  return MAIN_ROADS.has(roadClass);
+}
+
+/** Weighted traffic type for a car appearing on a road of class `roadClass` (buses only on main roads). */
+export function pickTrafficType(rand: () => number, roadClass: string): VehicleTypeKey {
+  const main = isMainRoad(roadClass);
+  const keys = VEHICLE_TYPE_KEYS.filter((k) => main || !VEHICLE_CATALOG[k].mainRoadsOnly);
+  let total = 0;
+  for (const k of keys) total += VEHICLE_CATALOG[k].spawn.traffic;
+  let r = rand() * total;
+  for (const k of keys) {
+    r -= VEHICLE_CATALOG[k].spawn.traffic;
+    if (r < 0) return k;
+  }
+  return keys[keys.length - 1];
 }

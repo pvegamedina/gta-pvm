@@ -28,6 +28,8 @@ import { drawMinimap, type MinimapDot } from "./world/minimap";
 import { buildCampusWorld, type CampusWorld } from "./world/campus/campusWorld";
 import { loadNatureAssets, updateNatureVisibility, type NatureAssets } from "./world/campus/nature";
 import { fetchCampusMap, type CampusMap } from "./map/loader";
+import { loadMegakit, type MegakitAssets } from "./assets/megakit";
+import { loadPropAssets, type PropAssets } from "./assets/props";
 import { createRoadIndex, nearestRoadPoint } from "./map/queries";
 import { isDrivable } from "./world/campus/mapPainter";
 
@@ -36,7 +38,7 @@ import { loadVehicleAssets } from "./vehicles/vehicleAssets";
 import { resolveVehicleType } from "./vehicles/catalog";
 import { sirenFlash } from "./vehicles/animation";
 import { HoldKey } from "./core/holdKey";
-import { maintainTraffic, settleOnGround, spawnParked, updateAI } from "./vehicles/traffic";
+import { maintainTraffic, settleOnGround, spawnAICar, spawnParked, updateAI } from "./vehicles/traffic";
 import { distanceToStop, signalState } from "./vehicles/roadNetwork";
 import { updatePlayerCar } from "./vehicles/playerCar";
 
@@ -73,6 +75,7 @@ import { NetClient, defaultServerUrl } from "./net/client";
 import { RemotePlayerManager } from "./net/remotePlayers";
 
 import { Hud } from "./hud/hud";
+import { createPlaceTracker, updateBuildingName, updateStreetName } from "./hud/placeNames";
 
 export interface GameHandle {
   dispose(): void;
@@ -1201,6 +1204,8 @@ export function createGame(): GameHandle {
       }
       env.update(dt, cam.fx, cam.fz, camera, groundY(cam.fx, cam.fz, cam.fy));
       if (world?.nature) updateNatureVisibility(world.nature, cam.fx, cam.fz, natureShowAll);
+      world?.facades?.update(cam.fx, cam.fz, natureShowAll, camera);
+      world?.furniture?.update(cam.fx, cam.fz, env.state.nightF, natureShowAll);
       corpses.update(dt);
       effects.update(dt);
       remotePlayers.update(dt, env.state.nightF);
@@ -1275,8 +1280,27 @@ export function createGame(): GameHandle {
     audio.updateSirens(playing && !paused, sirenSounds);
   }
 
+  // ---------------- Location toasts (street names, campus buildings) ----------------
+  const places = createPlaceTracker();
+  let namedRoads: ReturnType<typeof createRoadIndex> | null = null;
+  let entrances: { name: string; x: number; z: number }[] = [];
+  function updatePlaces(dt: number): void {
+    if (!world || !player.alive) return;
+    if (!namedRoads) {
+      namedRoads = createRoadIndex(world.map.roads.filter((r) => r.name && r.footway !== "sidewalk" && r.footway !== "crossing"));
+      entrances = world.buildings.info.filter((b) => b.name && b.entrance).map((b) => ({ name: b.name!, x: b.entrance![0], z: b.entrance![1] }));
+    }
+    const hit = nearestRoadPoint(namedRoads, player.x, player.z, { maxDistance: 20 });
+    const road = hit ? namedRoads.roads[hit.road] : null;
+    const street = updateStreetName(places, road?.name && hit ? { name: road.name, excess: Math.max(0, hit.distance - road.width / 2) } : null, dt);
+    const building = player.mode === "foot" ? updateBuildingName(places, entrances, player.x, player.z) : null;
+    if (building) hud.showPlace(building, "Campus de El Carmen");
+    else if (street) hud.showPlace(street, "Huelva");
+  }
+
   const dots: MinimapDot[] = [];
   function updateHud(dt: number): void {
+    updatePlaces(dt);
     const hh = Math.floor(env.state.tod);
     const mm = Math.floor((env.state.tod - hh) * 60);
     hud.setClock(hh, mm);
@@ -1422,17 +1446,33 @@ export function createGame(): GameHandle {
     console.warn("[assets] nature models failed to load, the campus will have no trees", err);
     return null;
   });
+  const megakitReady: Promise<MegakitAssets | null> = loadMegakit().catch((err: unknown) => {
+    console.warn("[assets] MegaKit facade modules failed to load, buildings keep their plain walls", err);
+    return null;
+  });
+  const propsReady: Promise<PropAssets | null> = loadPropAssets().catch((err: unknown) => {
+    console.warn("[assets] street prop models failed to load, no bicycles / cones / model traffic lights", err);
+    return null;
+  });
   // Build the world as soon as the map (and trees) are in, so the attract view shows it.
-  const worldReady = Promise.all([mapReady, natureReady]).then(([map, nature]) => {
+  const worldReady = Promise.all([mapReady, natureReady, megakitReady, propsReady]).then(([map, nature, megakit, props]) => {
     if (disposed || !map) return null;
     const t0 = performance.now();
     const w = buildCampusWorld(scene, map, env, grid, shootables, anisotropy);
     if (nature) w.addNature(nature);
+    if (megakit) {
+      w.addFacades(megakit);
+      // Attract mode orbits the whole campus: dress every building until the game starts.
+      w.facades?.update(w.centre.x, w.centre.z, true);
+    }
+    w.addFurniture(props, megakit);
+    if (props) w.signals.useModel(props.get("traffic_light") ?? null);
     roadIndex = createRoadIndex(map.roads);
     world = w;
     console.info(
       `[world] campus built in ${Math.round(performance.now() - t0)} ms: roads ${w.roads.stats.triangles} tris, buildings ${w.buildings.stats.triangles} tris, ` +
-        `${w.nature?.stats.trees ?? 0} trees + ${w.nature?.stats.scatter ?? 0} scatter, ${w.signals.count} signal heads`,
+        `${w.nature?.stats.trees ?? 0} trees + ${w.nature?.stats.scatter ?? 0} scatter, ${w.signals.count} signal heads, ` +
+        `${w.facades?.stats.instances ?? 0} facade instances on ${w.facades?.stats.buildings ?? 0} buildings`,
     );
     return w;
   });
@@ -1503,6 +1543,26 @@ export function createGame(): GameHandle {
         return vehicles.length - 1;
       },
       teleport: (x: number, z: number, yaw = player.yaw) => teleportPlayer(x, z, yaw),
+      /** Dev-only: an AI vehicle of a given type in traffic near the camera focus (index, or -1). */
+      spawnTraffic: (type: string, minDist = 25, siren = false) => {
+        if (!world) return -1;
+        const v = spawnAICar(scene, vehicles, world.roadNet, cam.fx, cam.fz, minDist, resolveVehicleType(type));
+        if (!v) return -1;
+        v.siren = siren && v.spec.siren;
+        syncVehicleHitboxes();
+        return vehicles.indexOf(v);
+      },
+      /** Dev-only: puts the player in vehicle i (as if E was pressed next to it). */
+      enterVehicle: (i: number) => {
+        const v = vehicles[i];
+        if (!v) return false;
+        enterCar(player, v);
+        hud.setMode("CONDUCIENDO · " + v.spec.name.toUpperCase(), true);
+        return true;
+      },
+      setSiren: (on: boolean) => {
+        if (player.car && player.car.spec.siren) player.car.siren = on;
+      },
       /** Traffic AI state of vehicle i: distance to its stop line and the light it sees. */
       aiState: (i: number) => {
         const v = vehicles[i];
@@ -1526,6 +1586,7 @@ export function createGame(): GameHandle {
       showAllNature: (all: boolean) => {
         natureShowAll = all;
         if (world?.nature) updateNatureVisibility(world.nature, cam.fx, cam.fz, all);
+        world?.facades?.update(cam.fx, cam.fz, all);
       },
       ground: (x: number, z: number) => groundY(x, z),
       setTime: (tod: number) => {
@@ -1535,8 +1596,22 @@ export function createGame(): GameHandle {
       /** Signal heads/junctions and the light shown to each approach right now. */
       junctions: () => world?.map.trafficLights.map((j, i) => ({ i, x: j.x, z: j.z })) ?? [],
       buildings: () => world?.buildings.info.filter((b) => b.name).map((b) => ({ name: b.name, x: b.centroid[0], z: b.centroid[1], base: b.base, top: b.top })) ?? [],
+      /** Named buildings with a facade entrance (point in front of the door, outward yaw). */
+      buildingEntrances: () =>
+        world?.buildings.info.filter((b) => b.name && b.entrance).map((b) => ({ name: b.name!, x: b.entrance![0], z: b.entrance![1], yaw: b.entranceYaw })) ?? [],
       renderInfo: () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures }),
-      worldStats: () => (world ? { roads: world.roads.stats, buildings: world.buildings.stats, nature: world.nature?.stats ?? null, signals: world.signals.count } : null),
+      worldStats: () =>
+        world
+          ? {
+              roads: world.roads.stats,
+              markings: world.markings.stats,
+              buildings: world.buildings.stats,
+              nature: world.nature?.stats ?? null,
+              signals: world.signals.count,
+              facades: world.facades?.stats ?? null,
+              furniture: world.furniture?.stats ?? null,
+            }
+          : null,
     };
   }
 
