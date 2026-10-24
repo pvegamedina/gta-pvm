@@ -8,7 +8,7 @@ import * as THREE from "three";
 import type { PlayerMotion, PlayerSnapshot, WeaponId } from "@shared/protocol";
 import { addVeh, removeVeh, visualVeh, type Vehicle } from "../vehicles/meshes";
 import type { VehicleTypeKey } from "../vehicles/types";
-import { characterForColor } from "../characters/characterChoice";
+import { parseCharacterId, resolveCharacter } from "../characters/characterChoice";
 import type { CharacterRig, RigFactory } from "../characters/characterRig";
 import { InterpolationBuffer } from "./interpolation";
 import { ShootableRegistry } from "../combat/shootables";
@@ -17,6 +17,8 @@ export interface RemotePlayer {
   id: string;
   name: string;
   color: number;
+  /** Chosen character from the server (validated id), or undefined for old servers. */
+  character?: string;
   health: number;
   alive: boolean;
   kills: number;
@@ -106,7 +108,7 @@ export class RemotePlayerManager {
   private attachRig(rp: RemotePlayer): void {
     if (!this.rigFactory) return;
     const rig = this.rigFactory({
-      character: characterForColor(rp.color),
+      character: resolveCharacter(rp.character, rp.color),
       colors: { skin: 0xe0ac84, shirt: rp.color, pants: 0x2b3a55, hair: 0x2a1c14, shoe: 0xf0f0f0 },
       castShadow: true,
     });
@@ -119,6 +121,7 @@ export class RemotePlayerManager {
   private detachRig(rp: RemotePlayer): void {
     if (!rp.rig) return;
     this.shootables.remove(rp.rig.group);
+    rp.rig.group.remove(rp.nameSprite, rp.healthSprite);
     rp.rig.dispose();
     rp.rig = null;
   }
@@ -141,6 +144,7 @@ export class RemotePlayerManager {
       id: snapshot.id,
       name: snapshot.name,
       color: snapshot.color,
+      character: snapshot.character,
       health: snapshot.health,
       alive: snapshot.alive,
       kills: snapshot.kills,
@@ -193,9 +197,55 @@ export class RemotePlayerManager {
     }
   }
 
+  /**
+   * A remote player picked another character: rebuild their rig (interpolation
+   * buffer, name tag and health bar are kept). A corpse they left keeps the
+   * old model because it was already detached.
+   */
+  setCharacter(id: string, character: string): void {
+    const rp = this.players.get(id);
+    const valid = parseCharacterId(character);
+    if (!rp || !valid || rp.character === valid) return;
+    rp.character = valid;
+    if (!this.rigFactory) return;
+    const old = rp.rig;
+    const pos = old?.group.position.clone();
+    const yaw = old?.group.rotation.y ?? 0;
+    this.detachRig(rp);
+    this.attachRig(rp);
+    if (rp.rig && pos) {
+      (rp.rig as CharacterRig).group.position.copy(pos);
+      (rp.rig as CharacterRig).group.rotation.y = yaw;
+    }
+  }
+
   /** A remote player fired/punched (from a "shot" broadcast): plays the matching animation. */
   notifyAttack(id: string, weapon: WeaponId): void {
     this.players.get(id)?.rig?.triggerAttack(weapon);
+  }
+
+  /**
+   * Detaches a dying remote player's rig (name tag/health bar stay with the
+   * player) so it can become a persistent corpse; a fresh rig takes its place,
+   * hidden until the player is alive again.
+   */
+  detachRigForCorpse(id: string): CharacterRig | null {
+    const rp = this.players.get(id);
+    if (!rp?.rig || rp.car) return null;
+    const old = rp.rig;
+    this.shootables.remove(old.group);
+    old.group.remove(rp.nameSprite, rp.healthSprite);
+    rp.rig = null;
+    this.attachRig(rp);
+    if (rp.rig) (rp.rig as CharacterRig).group.visible = false;
+    return old;
+  }
+
+  /** Approximate world velocity (m/s) of a remote player on foot, from its last motion. */
+  velocityOf(id: string): { x: number; y: number; z: number } {
+    const m = this.players.get(id)?.lastMotion;
+    if (!m || m.car) return { x: 0, y: 0, z: 0 };
+    return { x: Math.sin(m.yaw) * m.speed, y: 0, z: Math.cos(m.yaw) * m.speed };
   }
 
   /** World position of a remote player's gun muzzle (into `out`), or null when unknown. */
@@ -247,7 +297,9 @@ export class RemotePlayerManager {
         }
         const rig = rp.rig;
         if (!rig) continue;
-        rig.group.visible = true;
+        // Dead players' bodies are corpses now (game.ts); the fresh rig waits hidden.
+        rig.group.visible = rp.alive;
+        if (!rp.alive) continue;
         rig.group.position.set(motion.p[0], motion.p[1], motion.p[2]);
         rig.group.rotation.y = motion.yaw;
         rig.update(dt, {

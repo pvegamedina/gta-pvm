@@ -10,6 +10,7 @@ import { AttackTimers } from "./animationState";
 import { MUZZLE_NAME } from "./weaponPose";
 import { createHitbox, excludeFromRaycast, pruneRaycastWhenHidden } from "./hitbox";
 import type { CharacterRig, RigSpec, RigUpdate } from "./characterRig";
+import { GUN_KICK_OMEGA, RecoilSpring, WEAPON_FEEL } from "../combat/recoil";
 
 export function createProceduralRig(spec: RigSpec): CharacterRig {
   const human = makeHuman(spec.colors);
@@ -27,9 +28,11 @@ export function createProceduralRig(spec: RigSpec): CharacterRig {
   let weapon: WeaponId = "fists";
   let handle: WeaponMeshHandle | null = null;
   let phase = Math.random() * 6;
+  let weaponDropped = false;
+  const kick = new RecoilSpring(GUN_KICK_OMEGA);
 
   function update(dt: number, s: RigUpdate): void {
-    if (s.weapon !== weapon) {
+    if (s.weapon !== weapon && !weaponDropped) {
       weapon = s.weapon;
       handle = setHeldWeapon(human.rHand, handle, weapon, buildProceduralWeapon);
     }
@@ -64,6 +67,9 @@ export function createProceduralRig(spec: RigSpec): CharacterRig {
     applyAimPose(u, aiming, armed);
     const punch = attacks.punch;
     if (punch) (punch === "left" ? u.lArm : u.rArm).rotation.x = -1.5;
+    // Gun kick: the raised right arm snaps up a little and recovers.
+    kick.update(dt);
+    if (armed) u.rArm.rotation.x -= kick.value * 0.3;
     u.group.position.y = s.ground ? Math.abs(Math.sin(phase)) * 0.05 * amp : 0;
   }
 
@@ -71,12 +77,21 @@ export function createProceduralRig(spec: RigSpec): CharacterRig {
     group,
     kind: "procedural",
     update,
-    triggerAttack: (w) => attacks.trigger(w),
+    triggerAttack(w) {
+      attacks.trigger(w);
+      if (w !== "fists") kick.kick(WEAPON_FEEL[w].gunKick);
+    },
     muzzleWorldPosition(out) {
       const muzzle = handle?.group.getObjectByName(MUZZLE_NAME);
       if (!muzzle) return false;
       muzzle.getWorldPosition(out);
       return true;
+    },
+    ragdollRoot: null,
+    dropWeapon() {
+      handle = setHeldWeapon(human.rHand, handle, "fists", buildProceduralWeapon);
+      weapon = "fists";
+      weaponDropped = true;
     },
     dispose() {
       group.removeFromParent();

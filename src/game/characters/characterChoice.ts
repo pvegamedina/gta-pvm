@@ -1,20 +1,40 @@
-// Which character model a player/pedestrian uses. Pure (no THREE) so every
-// client derives the same model for the same server-assigned player color.
+// Which character model a player/pedestrian uses. Pure (no THREE). The
+// canonical id list and the colour fallback live in the shared protocol (the
+// server validates choices against them); this module adds the client-side
+// selection helpers. An explicit player choice always wins over the colour.
 
-/** Character GLBs under public/models/characters/. Order matters: it defines
- * the color -> character mapping, so append new ids at the end. */
-export const CHARACTER_IDS = ["casual_hoodie", "casual_2", "suit", "worker", "punk", "swat", "beach", "farmer"] as const;
+import { CHARACTER_IDS, DEFAULT_CHARACTER, characterForColor, isCharacterId, type CharacterId } from "@shared/protocol";
 
-export type CharacterId = (typeof CHARACTER_IDS)[number];
+export { CHARACTER_IDS, DEFAULT_CHARACTER, characterForColor };
+export type { CharacterId };
 
-/** Used offline and before the server's `welcome` tells us our color. */
-export const DEFAULT_CHARACTER: CharacterId = "casual_hoodie";
+/** Display names for the character picker (Spanish UI). */
+export const CHARACTER_NAMES: Record<CharacterId, string> = {
+  casual_hoodie: "Sudadera",
+  casual_2: "Casual",
+  suit: "Traje",
+  worker: "Obrero",
+  punk: "Punk",
+  swat: "SWAT",
+  beach: "Playero",
+  farmer: "Granjero",
+};
 
-/** Deterministic character for a player's server-assigned color (`color % N`). */
-export function characterForColor(color: number | null | undefined): CharacterId {
-  if (color == null || !Number.isFinite(color)) return DEFAULT_CHARACTER;
-  const i = Math.abs(Math.trunc(color)) % CHARACTER_IDS.length;
-  return CHARACTER_IDS[i];
+/** A known character id, or null (unknown strings from storage/network, wrong types). */
+export function parseCharacterId(v: unknown): CharacterId | null {
+  return isCharacterId(v) ? v : null;
+}
+
+/** The character `delta` steps away in the picker order, wrapping around. */
+export function cycleCharacter(current: CharacterId, delta: number): CharacterId {
+  const n = CHARACTER_IDS.length;
+  const i = CHARACTER_IDS.indexOf(current);
+  return CHARACTER_IDS[(((i + delta) % n) + n) % n];
+}
+
+/** Explicit (valid) choice first, else the deterministic colour-derived default. */
+export function resolveCharacter(choice: unknown, color: number | null | undefined): CharacterId {
+  return parseCharacterId(choice) ?? characterForColor(color);
 }
 
 /** Random character for local-only actors (pedestrians). */

@@ -30,12 +30,15 @@ const CELL = 16;
 
 export class CollisionGrid {
   private grid = new Map<number, Collider[]>();
+  /** Every collider once (the grid buckets duplicate colliders spanning cells). */
+  private list: Collider[] = [];
 
   private gk(cx: number, cz: number): number {
     return (cx + 256) * 512 + (cz + 256);
   }
 
   add(c: Collider): void {
+    this.list.push(c);
     const x0 = c.t === 0 ? c.x - c.hx : c.x - c.r;
     const x1 = c.t === 0 ? c.x + c.hx : c.x + c.r;
     const z0 = c.t === 0 ? c.z - c.hz : c.z - c.r;
@@ -59,6 +62,11 @@ export class CollisionGrid {
 
   addCirc(x: number, z: number, r: number): void {
     this.add({ t: 1, x, z, r, h: 99 });
+  }
+
+  /** All colliders, each once (used to mirror the static world into the ragdoll physics). */
+  all(): readonly Collider[] {
+    return this.list;
   }
 
   each(x: number, z: number, r: number, fn: (c: Collider) => void): void {

@@ -2,7 +2,9 @@
 // clone of the loaded GLB, an AnimationMixer whose actions all play at once
 // with weights/times computed by the pure CharacterAnimState blend (smooth
 // speed-driven locomotion, soft overlays), the GLB gun attached to the
-// Wrist.R bone, and an invisible hitbox for castShot().
+// Wrist.R bone (with a spring-driven recoil kick on every shot), and an
+// invisible hitbox for castShot(). The skinned visual is exposed as
+// `ragdollRoot` so a corpse can hand its skeleton to the physics ragdoll.
 
 import * as THREE from "three";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
@@ -13,10 +15,17 @@ import { ANIM_CLIPS, CharacterAnimState, type ClipName } from "./animationState"
 import { createHitbox, excludeFromRaycast, pruneRaycastWhenHidden } from "./hitbox";
 import type { CharacterRig, RigSpec, RigUpdate } from "./characterRig";
 import { MUZZLE_NAME } from "./weaponPose";
+import { GUN_KICK_OMEGA, RecoilSpring, WEAPON_FEEL } from "../combat/recoil";
 
 /** GLTFLoader strips "." from node names, so the "Wrist.R" bone is named "WristR". */
 const WEAPON_SOCKET_NAMES = ["WristR", "Wrist.R"];
 
+// ---- Held-gun recoil (scaled by WEAPON_FEEL[weapon].gunKick, spring in combat/recoil.ts) ----
+/** Barrel pitch-up (rad) at full kick: the wrist bone rotates about its Z
+ * (its +Y runs along the barrel, -X points up, so +Z rotation lifts the muzzle). */
+const KICK_PITCH = 0.42;
+/** Slide back towards the elbow (m, along the wrist's -Y) at full kick. */
+const KICK_BACK = 0.055;
 export function createModelRig(assets: CharacterAssets, spec: RigSpec): CharacterRig {
   const source = assets.characters[spec.character];
   const visual = cloneSkinned(source.scene) as THREE.Group;
@@ -53,6 +62,9 @@ export function createModelRig(assets: CharacterAssets, spec: RigSpec): Characte
 
   let weapon: WeaponId = "fists";
   let handle: WeaponMeshHandle | null = null;
+  let handleBase = new THREE.Vector3();
+  let weaponDropped = false;
+  const kick = new RecoilSpring(GUN_KICK_OMEGA);
   const buildWeapon = (w: "pistol" | "m4") => assets.weapons[w].clone();
 
   function apply(): void {
@@ -65,29 +77,47 @@ export function createModelRig(assets: CharacterAssets, spec: RigSpec): Characte
   apply();
 
   function update(dt: number, s: RigUpdate): void {
-    if (s.weapon !== weapon) {
+    if (s.weapon !== weapon && !weaponDropped) {
       weapon = s.weapon;
       handle = setHeldWeapon(socket, handle, weapon, buildWeapon);
+      if (handle) handleBase = handle.group.position.clone();
+      kick.reset();
     }
     anim.update(dt, { speed: s.speed, armed: weapon !== "fists", aiming: s.aiming, alive: s.alive, running: s.running });
     apply();
+    // Recoil on top of the animated pose (the mixer rewrites the wrist next frame).
+    kick.update(dt);
+    const k = kick.value;
+    if (handle) handle.group.position.copy(handleBase).y -= k * KICK_BACK;
+    if (Math.abs(k) > 1e-4 && socket !== visual) socket.rotateZ(k * KICK_PITCH);
   }
 
   return {
     group,
     kind: "model",
     update,
-    triggerAttack: (w) => anim.trigger(w),
+    triggerAttack(w) {
+      anim.trigger(w);
+      if (w !== "fists") kick.kick(WEAPON_FEEL[w].gunKick);
+    },
     muzzleWorldPosition(out) {
       const muzzle = handle?.group.getObjectByName(MUZZLE_NAME);
       if (!muzzle) return false;
       muzzle.getWorldPosition(out);
       return true;
     },
+    ragdollRoot: visual,
+    dropWeapon() {
+      handle = setHeldWeapon(socket, handle, "fists", buildWeapon);
+      weapon = "fists";
+      weaponDropped = true;
+    },
     dispose() {
       mixer.stopAllAction();
       mixer.uncacheRoot(visual);
       group.removeFromParent();
+      // Each SkeletonUtils clone owns its Skeleton (and its bone texture).
+      visual.traverse((o) => (o as THREE.SkinnedMesh).isSkinnedMesh && (o as THREE.SkinnedMesh).skeleton.dispose());
     },
   };
 }

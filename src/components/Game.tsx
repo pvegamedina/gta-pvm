@@ -59,7 +59,12 @@ export default function Game() {
         </div>
         <div id="damageVignette" />
 
-        <div id="crosshair" />
+        <div id="crosshair">
+          <i />
+          <i />
+          <i />
+          <i />
+        </div>
         <div id="hitMarker">✕</div>
         <div id="ammoBox">
           <div id="weaponName">Puños</div>
@@ -91,6 +96,18 @@ export default function Game() {
         <h1>Ciudad Abierta</h1>
         <p className="sub">Camina, conduce y explora la ciudad a tu aire</p>
         <input id="nameInput" className="nameInput" type="text" placeholder="Tu nombre" maxLength={16} />
+        <div className="charLabel">Elige tu personaje · <kbd>←</kbd> <kbd>→</kbd></div>
+        <div className="charPicker">
+          <button className="charPrev" aria-label="Personaje anterior" disabled>
+            ‹
+          </button>
+          <div className="charStage">
+            <div className="charName">Cargando…</div>
+          </div>
+          <button className="charNext" aria-label="Personaje siguiente" disabled>
+            ›
+          </button>
+        </div>
         <button id="btnPlay" className="big">
           Jugar
         </button>
@@ -151,6 +168,18 @@ export default function Game() {
 
       <div id="pause" className="overlay hidden">
         <h2>Pausa</h2>
+        <div className="charLabel">Cambiar personaje</div>
+        <div className="charPicker">
+          <button className="charPrev" aria-label="Personaje anterior" disabled>
+            ‹
+          </button>
+          <div className="charStage">
+            <div className="charName">Cargando…</div>
+          </div>
+          <button className="charNext" aria-label="Personaje siguiente" disabled>
+            ›
+          </button>
+        </div>
         <div className="btnrow">
           <button id="btnResume" className="big">
             Reanudar

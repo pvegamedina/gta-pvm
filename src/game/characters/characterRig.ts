@@ -34,6 +34,13 @@ export interface CharacterRig {
   triggerAttack(weapon: WeaponId): void;
   /** Writes the held gun's barrel-tip world position into `out`; false when unarmed. */
   muzzleWorldPosition(out: THREE.Vector3): boolean;
+  /**
+   * Skinned visual whose bones a ragdoll can drive (physics/ragdoll.ts), or
+   * null when this rig has no skeleton (procedural fallback).
+   */
+  readonly ragdollRoot: THREE.Object3D | null;
+  /** Removes the held gun for good (corpses drop it); later updates won't re-attach it. */
+  dropWeapon(): void;
   /** Stops animation and detaches the rig from the scene. Shared GPU assets are kept. */
   dispose(): void;
 }

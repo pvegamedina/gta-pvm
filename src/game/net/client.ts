@@ -30,6 +30,8 @@ export class NetClient {
   private name: string;
   private sessionId: string;
   private getMotion: (() => PlayerMotion) | null = null;
+  /** Chosen character sent with every hello (null = let the server pick from our colour). */
+  private character: string | null = null;
   private playerCount = 0;
   public status: ConnectionStatus = "connecting";
 
@@ -57,7 +59,7 @@ export class NetClient {
     this.ws = ws;
     ws.addEventListener("open", () => {
       this.reconnectAttempt = 0;
-      this.send({ t: "hello", name: this.name, sessionId: this.sessionId });
+      this.send({ t: "hello", name: this.name, sessionId: this.sessionId, ...(this.character ? { character: this.character } : {}) });
       this.pingTimer = setInterval(() => this.send({ t: "ping", ts: Date.now() }), 2000);
       this.stateTimer = setInterval(() => {
         if (this.getMotion) this.send({ t: "state", motion: this.getMotion() });
@@ -110,6 +112,12 @@ export class NetClient {
     this.reconnectAttempt += 1;
     const delay = Math.min(10000, 500 * 2 ** Math.min(5, this.reconnectAttempt));
     this.reconnectTimer = setTimeout(() => this.openSocket(), delay);
+  }
+
+  /** Sets the character announced in hello; when already connected also tells the server now. */
+  setCharacter(character: string, announce: boolean): void {
+    this.character = character;
+    if (announce) this.send({ t: "setCharacter", character });
   }
 
   setMotionSource(fn: () => PlayerMotion): void {

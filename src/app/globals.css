@@ -27,7 +27,8 @@ canvas#c {
   inset: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
+  /* "safe": when the content is taller than the viewport it scrolls instead of clipping the top. */
+  justify-content: safe center;
   flex-direction: column;
   background: radial-gradient(ellipse at center, rgba(12, 20, 34, 0.78), rgba(4, 8, 14, 0.94));
   z-index: 20;
@@ -309,32 +310,56 @@ input.nameInput {
 }
 
 /* ===== Weapons ===== */
+/* Four arms around the screen centre; --gap (set by hud.ts) blooms with the
+   weapon's current spread so the crosshair shows the real shot cone. */
 #crosshair {
+  --gap: 4px;
+  --arm: 7px;
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 18px;
-  height: 18px;
-  transform: translate(-50%, -50%);
+  width: 0;
+  height: 0;
   display: none;
+  pointer-events: none;
 }
-#crosshair::before,
+#crosshair i {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.85);
+}
+#crosshair i:nth-child(1),
+#crosshair i:nth-child(2) {
+  left: -1px;
+  width: 2px;
+  height: var(--arm);
+}
+#crosshair i:nth-child(3),
+#crosshair i:nth-child(4) {
+  top: -1px;
+  width: var(--arm);
+  height: 2px;
+}
+#crosshair i:nth-child(1) {
+  top: calc(-1 * var(--gap) - var(--arm));
+}
+#crosshair i:nth-child(2) {
+  top: var(--gap);
+}
+#crosshair i:nth-child(3) {
+  left: calc(-1 * var(--gap) - var(--arm));
+}
+#crosshair i:nth-child(4) {
+  left: var(--gap);
+}
 #crosshair::after {
   content: "";
   position: absolute;
-  background: rgba(255, 255, 255, 0.85);
-}
-#crosshair::before {
-  left: 8px;
-  top: 0;
+  left: -1px;
+  top: -1px;
   width: 2px;
-  height: 18px;
-}
-#crosshair::after {
-  top: 8px;
-  left: 0;
-  width: 18px;
   height: 2px;
+  background: rgba(255, 255, 255, 0.95);
 }
 #hitMarker {
   position: absolute;
@@ -449,4 +474,50 @@ input.nameInput {
   font-size: 22px;
   font-weight: 700;
   margin-top: 10px;
+}
+
+/* ===== Character picker (start + pause overlays) ===== */
+.charLabel {
+  margin: 14px 0 4px;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ffc069;
+}
+.charPicker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+.charPicker > button {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  font-size: 28px;
+  line-height: 1;
+  border-radius: 50%;
+}
+.charStage {
+  position: relative;
+  width: 180px;
+  height: 220px;
+  border-radius: 14px;
+  background: radial-gradient(ellipse at 50% 70%, rgba(255, 190, 110, 0.18), rgba(255, 255, 255, 0.04) 70%);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+.charPreview {
+  display: block;
+  width: 180px;
+  height: 220px;
+}
+.charName {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
 }

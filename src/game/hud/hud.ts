@@ -21,6 +21,7 @@ export class Hud {
   private vignetteT = 0;
   private killFeedEl = $("killFeed");
   private scoreboardVisible = false;
+  private crosshairGap = -1;
 
   setHudVisible(v: boolean): void {
     $("hud")?.classList.toggle("hidden", !v);
@@ -93,6 +94,13 @@ export class Hud {
     if (countEl) countEl.textContent = weapon === "fists" ? "—" : `${mag} / ${reserve}`;
     const reloadEl = $("reloadIndicator") as HTMLElement | null;
     if (reloadEl) reloadEl.style.display = reloading ? "block" : "none";
+  }
+
+  /** Distance (px) of the crosshair arms from the centre: blooms with the weapon's spread. */
+  setCrosshairGap(px: number): void {
+    if (Math.abs(px - this.crosshairGap) < 0.25) return;
+    this.crosshairGap = px;
+    ($("crosshair") as HTMLElement | null)?.style.setProperty("--gap", `${px.toFixed(1)}px`);
   }
 
   hitMarker(): void {

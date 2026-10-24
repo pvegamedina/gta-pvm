@@ -1,6 +1,8 @@
 // Engine entry point: builds the scene/city, wires input, physics, combat,
 // health, HUD and networking, and runs the fixed-step game loop. Mirrors the
 // legacy single-file game's structure, split across src/game/** modules.
+// Deaths hand the body over to physics/corpses.ts (Rapier ragdolls, local and
+// visual only) so it stays on the ground while the entity respawns fresh.
 
 import * as THREE from "three";
 import {
@@ -20,7 +22,7 @@ import { STEP } from "./core/constants";
 import { createRng, WORLD_SEED } from "./core/rng";
 import { clamp } from "./core/math";
 
-import { CollisionGrid } from "./world/colliders";
+import { CollisionGrid, groundY } from "./world/colliders";
 import { createCityState } from "./world/cityState";
 import { createEnvironment } from "./world/environment";
 import { buildGround } from "./world/ground";
@@ -33,23 +35,30 @@ import { visualVeh, removeVeh, type Vehicle } from "./vehicles/meshes";
 import { spawnVehicles, updateAI } from "./vehicles/traffic";
 import { updatePlayerCar } from "./vehicles/playerCar";
 
-import type { HumanColors } from "./player/human";
+import { randomPedColors, type HumanColors } from "./player/human";
 import { createPlayerState, type PlayerState } from "./player/playerState";
 import { updateFoot, footSpeed } from "./player/foot";
 import { nearestVehicle, enterCar, exitCar, forceExitCar } from "./player/enterExit";
 
-import { spawnPeds, updatePeds, hitPed, spookPedsNear, pedPosition, type Ped } from "./pedestrians/peds";
+import { spawnPeds, updatePeds, hitPed, spookPedsNear, pedPosition, pedVelocity, type Ped } from "./pedestrians/peds";
 
-import { createCameraState, snapCamera, updateCamera } from "./camera/camera";
+import { createCameraState, snapCamera, updateCamera, cameraRight } from "./camera/camera";
 import { createAudioSystem } from "./audio/audio";
 
 import { tickWeapon, tryFire, tryMelee, startReload, nextWeapon, totalSpread } from "./combat/weapons";
 import { applyDamage, tickRegen, respawn as respawnHealth, vehicleHitDamage, crashDamage, VEHICLE_HIT_SPEED_THRESHOLD } from "./combat/health";
-import { createEffectsSystem } from "./combat/effects";
-import { ShootableRegistry, castShot } from "./combat/shootables";
+import { createEffectsSystem, type ImpactKind } from "./combat/effects";
+import { ShootableRegistry, castShot, type RaycastShotResult } from "./combat/shootables";
+import { WEAPON_FEEL, spreadToCrosshairGap } from "./combat/recoil";
+import { rayGroundHit } from "./combat/impacts";
+
+import { loadRapier, PhysicsWorld, type PhysicsVehicle } from "./physics/physicsWorld";
+import { CorpseManager } from "./physics/corpses";
+import { findKillingShot, ramVelocity, shotImpulse, type RecordedShot, type Vec3 } from "./physics/deathImpulse";
 
 import { loadCharacterAssets } from "./assets/characterAssets";
-import { DEFAULT_CHARACTER, characterForColor, type CharacterId } from "./characters/characterChoice";
+import { DEFAULT_CHARACTER, CHARACTER_NAMES, cycleCharacter, parseCharacterId, randomCharacter, resolveCharacter, type CharacterId } from "./characters/characterChoice";
+import { CharacterPreview } from "./characters/characterPreview";
 import type { CharacterRig, RigFactory } from "./characters/characterRig";
 import { modelRigFactory, proceduralRigFactory } from "./characters/rigFactory";
 
@@ -67,6 +76,11 @@ const $ = (id: string) => document.getElementById(id);
 /** Procedural-fallback look of the local player (the model rig ignores it). */
 const PLAYER_COLORS: HumanColors = { skin: 0xe0ac84, shirt: 0xd9442b, pants: 0x2b3a55, hair: 0x2a1c14, shoe: 0xf0f0f0 };
 const PED_COUNT = 32;
+/** A network "killed" is matched to a shot that landed this recently / this close (for the ragdoll impulse). */
+const KILL_SHOT_MAX_AGE = 0.8;
+const KILL_SHOT_MAX_DIST = 2.2;
+/** Share of a body (kg) the bumper of a ramming car shoves. */
+const RAM_MASS = 40;
 
 function loadName(): string {
   try {
@@ -83,6 +97,25 @@ function saveName(n: string): void {
     localStorage.setItem("gta-pvm:name", n);
   } catch {
     // ignore
+  }
+}
+
+const CHARACTER_KEY = "gta-pvm:character";
+
+/** The player's explicit character choice (null when never chosen / storage unavailable). */
+function loadCharacter(): CharacterId | null {
+  try {
+    return parseCharacterId(localStorage.getItem(CHARACTER_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function saveCharacter(c: CharacterId): void {
+  try {
+    localStorage.setItem(CHARACTER_KEY, c);
+  } catch {
+    // ignore (private mode, blocked storage): the choice just won't persist
   }
 }
 
@@ -150,20 +183,26 @@ export function createGame(): GameHandle {
   let rigFactory: RigFactory = proceduralRigFactory;
   let assetsReady = false;
   let disposed = false;
-  /** Our model: derived from the server-assigned color once `welcome` arrives. */
-  let localCharacter: CharacterId = DEFAULT_CHARACTER;
+  /** Explicit choice (picker, persisted); it wins over the colour-derived default. */
+  let chosenCharacter: CharacterId | null = loadCharacter();
+  /** Our model: the choice, else derived from the server-assigned colour once `welcome` arrives. */
+  let localCharacter: CharacterId = chosenCharacter ?? DEFAULT_CHARACTER;
   let peds: Ped[] = [];
 
   const player: PlayerState = createPlayerState(rigFactory({ character: localCharacter, colors: PLAYER_COLORS, castShadow: true }), 21, 10.2, 2.3);
   scene.add(player.mesh.group);
 
-  /** Replaces the local player's rig, keeping its transform/visibility (the rig re-attaches the held weapon on its next update). */
-  function setPlayerRig(rig: CharacterRig): void {
+  /**
+   * Replaces the local player's rig, keeping its transform/visibility (the rig
+   * re-attaches the held weapon on its next update). `disposeOld` false keeps
+   * the old rig alive (it is being handed over as a corpse).
+   */
+  function setPlayerRig(rig: CharacterRig, disposeOld = true): void {
     const old = player.mesh;
     rig.group.position.copy(old.group.position);
     rig.group.rotation.copy(old.group.rotation);
     rig.group.visible = old.group.visible;
-    old.dispose();
+    if (disposeOld) old.dispose();
     scene.add(rig.group);
     player.mesh = rig;
   }
@@ -189,6 +228,18 @@ export function createGame(): GameHandle {
   const cam = createCameraState(2.3);
   const audio = createAudioSystem();
   const effects = createEffectsSystem(scene, audio);
+  const corpses = new CorpseManager(scene);
+  /** Rapier world for ragdolls; null until loaded (or if it failed: animated corpses). */
+  let physics: PhysicsWorld | null = null;
+  /** Recent shots (ours + remote) used to aim the ragdoll impulse of network kills. */
+  const recentShots: (RecordedShot & { weapon: WeaponId })[] = [];
+  function recordShot(origin: THREE.Vector3, end: THREE.Vector3, weapon: WeaponId): void {
+    recentShots.push({ origin: { x: origin.x, y: origin.y, z: origin.z }, end: { x: end.x, y: end.y, z: end.z }, time: tClock, weapon });
+    if (recentShots.length > 24) recentShots.shift();
+  }
+  /** While dead, the camera follows our corpse instead of the hidden entity. */
+  let localCorpse: { focus(out: THREE.Vector3): boolean } | null = null;
+  const corpseFocus = new THREE.Vector3();
   const remotePlayers = new RemotePlayerManager(scene, shootables);
   const hud = new Hud();
   const miniCtx = ($("mini") as HTMLCanvasElement).getContext("2d")!;
@@ -213,6 +264,7 @@ export function createGame(): GameHandle {
     },
     onMessage: handleServerMessage,
   });
+  if (chosenCharacter) net.setCharacter(chosenCharacter, false);
   net.connect();
   net.setMotionSource(buildMotion);
 
@@ -235,9 +287,9 @@ export function createGame(): GameHandle {
       case "welcome": {
         myId = msg.id;
         pendingSpawn = msg.spawn;
-        // Same color -> character mapping as every other client uses for us.
+        // Our choice wins; otherwise the server's pick (colour-derived), same as other clients see.
         const me = msg.players.find((p) => p.id === msg.id);
-        const character = characterForColor(me?.color);
+        const character = chosenCharacter ?? resolveCharacter(me?.character, me?.color);
         if (character !== localCharacter) {
           localCharacter = character;
           if (assetsReady) rebuildPlayerRig();
@@ -256,6 +308,9 @@ export function createGame(): GameHandle {
       case "playerLeft":
         remotePlayers.remove(msg.id);
         break;
+      case "characterChanged":
+        remotePlayers.setCharacter(msg.id, msg.character);
+        break;
       case "states":
         for (const s of msg.players) {
           if (s.id === myId) continue;
@@ -267,12 +322,20 @@ export function createGame(): GameHandle {
         remotePlayers.notifyAttack(msg.shooterId, msg.weapon);
         const origin = new THREE.Vector3(msg.origin[0], msg.origin[1], msg.origin[2]);
         const end = new THREE.Vector3(msg.end[0], msg.end[1], msg.end[2]);
+        recordShot(origin, end, msg.weapon);
         if (msg.weapon !== "fists") {
-          // Visual only: the bullet leaves the shooter's gun (when its model is
-          // known) and sparks on arrival; damage was already resolved server-side.
+          // Visual only: the round leaves the shooter's gun (when its model is
+          // known) and its impact plays on arrival; damage was already resolved
+          // server-side. The surface/corpse it lands on is resolved locally.
           const muzzle = remotePlayers.muzzleWorldPosition(msg.shooterId, new THREE.Vector3()) ?? origin;
-          effects.muzzleFlash(muzzle, msg.weapon);
-          effects.bullet(muzzle, end, msg.weapon, msg.hit);
+          const dir = end.clone().sub(origin);
+          const dist = dir.length();
+          dir.normalize();
+          const imp = msg.hit
+            ? { point: end, kind: "flesh" as ImpactKind, normal: null }
+            : resolveImpact(origin, dir, castShot(origin, dir, dist + 0.3, shootables, 0.3, camera), msg.weapon);
+          const yaw = remotePlayers.get(msg.shooterId)?.lastMotion?.yaw ?? 0;
+          effects.shot({ weapon: msg.weapon, muzzle, end: imp.point, right: cameraRight(yaw), impact: imp.kind, normal: imp.normal, shooter: msg.shooterId, local: false });
         }
         const dist = origin.distanceTo(camera.position);
         effects.gunshot(msg.weapon, dist);
@@ -292,7 +355,8 @@ export function createGame(): GameHandle {
         const killerName = msg.killerId ? remotePlayers.get(msg.killerId)?.name ?? (msg.killerId === myId ? myName : "???") : null;
         const victimName = msg.victimId === myId ? myName : remotePlayers.get(msg.victimId)?.name ?? "???";
         hud.pushKillFeed({ killer: killerName ?? "Mundo", victim: victimName, weapon: msg.weapon ? WEAPONS[msg.weapon].name : msg.cause ?? "" });
-        if (msg.victimId === myId) onLocalDeath(killerName);
+        if (msg.victimId === myId) onLocalDeath(killerName, msg.killerId);
+        else spawnRemoteCorpse(msg.victimId, msg.killerId);
         break;
       }
       case "respawned": {
@@ -344,6 +408,9 @@ export function createGame(): GameHandle {
 
   function teleportPlayer(x: number, z: number, yaw: number): void {
     if (player.car) forceExitCar(player, grid, vehicles);
+    // (Re)spawns show the fresh rig the corpse left behind.
+    player.mesh.group.visible = true;
+    localCorpse = null;
     player.x = x;
     player.z = z;
     player.yaw = yaw;
@@ -388,16 +455,102 @@ export function createGame(): GameHandle {
     hud.toast(m);
   }
 
-  function onLocalDeath(killer: string | null): void {
+  function onLocalDeath(killer: string | null, killerId: string | null = null): void {
     if (deathAt !== null) return;
     deathAt = tClock;
     killerAtDeath = killer;
+    // A crash death keeps (part of) the car's momentum for the body thrown out of it.
+    const carVel = player.car ? { x: player.car.vx * 0.6, y: 1, z: player.car.vz * 0.6 } : null;
     if (player.car) forceExitCar(player, grid, vehicles);
     player.firing = false;
     player.aiming = false;
+    // Detach the body: it becomes a corpse; we respawn later with a fresh rig.
+    const body = player.mesh;
+    body.group.position.set(player.x, player.y, player.z);
+    body.group.rotation.set(0, player.yaw, 0);
+    body.group.visible = true;
+    const velocity = carVel ?? { x: player.vx, y: player.vy, z: player.vz };
+    setPlayerRig(rigFactory({ character: localCharacter, colors: PLAYER_COLORS, castShadow: true }), false);
+    player.mesh.group.visible = false;
+    localCorpse = corpses.spawn({ rig: body, velocity, impulse: killingBlow({ x: player.x, y: player.y, z: player.z }, killerId) });
+  }
+
+  /** Impulse of the blow that killed someone standing at `pos`: a recent shot, or a ramming remote car. */
+  function killingBlow(pos: Vec3, killerId: string | null): { impulse: Vec3; point: Vec3 } | null {
+    const shot = findKillingShot(recentShots, pos, tClock, KILL_SHOT_MAX_AGE, KILL_SHOT_MAX_DIST);
+    if (shot) {
+      const dir = { x: shot.end.x - shot.origin.x, y: shot.end.y - shot.origin.y, z: shot.end.z - shot.origin.z };
+      return { impulse: shotImpulse(dir, shot.weapon), point: shot.end };
+    }
+    const car = killerId ? remotePlayers.get(killerId)?.car : null;
+    if (car) return ramBlow({ x: Math.sin(car.yaw) * car.speed, y: 0, z: Math.cos(car.yaw) * car.speed }, pos);
+    return null;
+  }
+
+  /** Shove of a car moving at `carVel` hitting a body standing at `pos`. */
+  function ramBlow(carVel: Vec3, pos: Vec3): { impulse: Vec3; point: Vec3 } {
+    const v = ramVelocity(carVel);
+    return { impulse: { x: v.x * RAM_MASS, y: v.y * RAM_MASS, z: v.z * RAM_MASS }, point: { x: pos.x, y: pos.y + 0.9, z: pos.z } };
+  }
+
+  /** A remote player died: their current body stays as a corpse (fresh hidden rig for the respawn). */
+  function spawnRemoteCorpse(victimId: string, killerId: string | null): void {
+    const velocity = remotePlayers.velocityOf(victimId);
+    const rig = remotePlayers.detachRigForCorpse(victimId);
+    if (!rig) return;
+    const p = { x: rig.group.position.x, y: rig.group.position.y, z: rig.group.position.z };
+    let blow = killingBlow(p, killerId);
+    if (!blow && killerId === myId && player.car) blow = ramBlow({ x: player.car.vx, y: 0, z: player.car.vz }, p);
+    corpses.spawn({ rig, velocity, impulse: blow });
+  }
+
+  /** Kills a ped: its body becomes a corpse and the ped gets a fresh (hidden) rig for its respawn. */
+  function killPed(p: Ped, blow: { impulse: Vec3; point: Vec3 } | null, velocity: Vec3 = pedVelocity(p)): void {
+    if (p.state === "down") return;
+    hitPed(p);
+    const body = p.mesh;
+    shootables.remove(body.group);
+    const fresh = rigFactory({ character: randomCharacter(), colors: randomPedColors(), castShadow: false });
+    fresh.group.visible = false;
+    scene.add(fresh.group);
+    p.mesh = fresh;
+    p.bodyTaken = true;
+    shootables.add(fresh.group, { kind: "ped", refId: p });
+    corpses.spawn({ rig: body, velocity, impulse: blow });
+  }
+
+  /** Refines a hitscan result: the ground (raised blocks / roads) or a corpse in front of it, when closer. */
+  function resolveImpact(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    res: RaycastShotResult,
+    weapon: WeaponId,
+  ): { point: THREE.Vector3; kind: ImpactKind; normal: THREE.Vector3 | null } {
+    let point = res.point;
+    let dist = res.distance;
+    let kind: ImpactKind = "none";
+    let normal = res.normal;
+    const living = !!res.hit && (res.hit.kind === "ped" || res.hit.kind === "remotePlayer");
+    if (res.hit) kind = living ? "flesh" : res.hit.kind === "building" ? "surface" : "vehicle";
+    const gd = rayGroundHit(origin, dir, dist, groundY);
+    if (gd !== null && gd < dist) {
+      dist = gd;
+      point = origin.clone().addScaledVector(dir, gd);
+      kind = "surface";
+      normal = new THREE.Vector3(0, 1, 0);
+    }
+    // Corpses take the round unless it hit a living character first.
+    const corpseHit = living ? null : corpses.shoot(origin, dir, dist, weapon);
+    if (corpseHit) return { point: corpseHit.point, kind: "flesh", normal: null };
+    return { point, kind, normal };
   }
 
   function resetGame(): void {
+    corpses.clear();
+    effects.clear();
+    localCorpse = null;
+    recentShots.length = 0;
+    cam.recoil.reset();
     player.mode = "foot";
     player.car = null;
     const spawn = pendingSpawn || { x: 21, z: 10.2, yaw: 2.3 };
@@ -455,6 +608,7 @@ export function createGame(): GameHandle {
     if (!playing || paused) return;
     paused = true;
     $("pause")?.classList.remove("hidden");
+    refreshPickers();
     for (const k in keys) keys[k] = false;
     if (document.exitPointerLock) document.exitPointerLock();
   }
@@ -487,7 +641,6 @@ export function createGame(): GameHandle {
   }
 
   // ---------------- Combat ----------------
-  const MUZZLE_OFFSET = new THREE.Vector3();
   function fireWeapon(): void {
     if (!player.alive || player.mode === "car") return;
     const id = player.weapon;
@@ -499,9 +652,11 @@ export function createGame(): GameHandle {
       const origin = camera.position.clone();
       const res = castShot(origin, dir, WEAPONS.fists.range, shootables, 0.3, camera);
       if (res.hit && (res.hit.kind === "ped" || res.hit.kind === "remotePlayer")) {
-        if (res.hit.kind === "ped") hitPed(res.hit.refId as Ped);
+        effects.impact(res.point, "flesh", null);
+        if (res.hit.kind === "ped") killPed(res.hit.refId as Ped, { impulse: shotImpulse(dir, "fists"), point: res.point });
         else {
           hud.hitMarker();
+          recordShot(origin, res.point, "fists");
           net.send({ t: "shoot", weapon: "fists", origin: [origin.x, origin.y, origin.z], end: [res.point.x, res.point.y, res.point.z], targetId: String(res.hit.refId) });
         }
       }
@@ -530,31 +685,36 @@ export function createGame(): GameHandle {
     }
     const origin = camera.position.clone();
     const res = castShot(origin, dir, spec.range, shootables, 0.3, camera);
-    // Visual bullet from the gun's muzzle to the hitscan point (impact spark
-    // when it arrives). Without a muzzle (rig not ready) fall back to a point
-    // in front of the camera — past its 0.5 near plane so the flash renders.
+    const imp = resolveImpact(origin, dir, res, id);
+    // The visible round flies from the gun's muzzle to the hitscan point (the
+    // crosshair ray from the camera). Without a muzzle (rig not ready) fall
+    // back to a point in front of the camera — past its 0.5 near plane.
     const muzzle = new THREE.Vector3();
     if (!player.mesh.muzzleWorldPosition(muzzle)) muzzle.copy(origin).addScaledVector(dir, 1.2);
-    effects.muzzleFlash(muzzle, id);
-    effects.bullet(muzzle, res.point, id, res.hit !== null);
+    effects.shot({ weapon: id, muzzle, end: imp.point, right: cameraRight(cam.yaw), impact: imp.kind, normal: imp.normal, shooter: "local", local: true });
     effects.gunshot(id, 0);
-    cam.shake = Math.min(1, cam.shake + (id === "m4" ? 0.08 : 0.12));
+    effects.mechClick(id);
+    // Gun feel: camera kick/climb/FOV punch + a little positional shake.
+    cam.recoil.fire(id);
+    cam.shake = Math.min(1, cam.shake + WEAPON_FEEL[id].shake);
+    recordShot(origin, imp.point, id);
     let targetId: string | null = null;
-    let hitSomething = false;
-    if (res.hit) {
-      hitSomething = true;
+    if (res.hit && imp.kind === "flesh" && imp.point === res.point) {
       if (res.hit.kind === "ped") {
-        hitPed(res.hit.refId as Ped);
+        killPed(res.hit.refId as Ped, { impulse: shotImpulse(dir, id), point: res.point });
         spookPedsNear(peds, res.point.x, res.point.z, 14);
+        hud.hitMarker();
+        effects.hitTick();
       } else if (res.hit.kind === "remotePlayer") {
         targetId = String(res.hit.refId);
         hud.hitMarker();
-      } else if (res.hit.kind === "remoteCar") {
-        hud.hitMarker();
+        effects.hitTick();
       }
+    } else if (res.hit && res.hit.kind === "remoteCar" && imp.point === res.point) {
+      hud.hitMarker();
     }
-    net.send({ t: "shoot", weapon: id, origin: [origin.x, origin.y, origin.z], end: [res.point.x, res.point.y, res.point.z], targetId });
-    void hitSomething;
+    // `end` is the visual impact (ground/corpse included); targetId drives damage.
+    net.send({ t: "shoot", weapon: id, origin: [origin.x, origin.y, origin.z], end: [imp.point.x, imp.point.y, imp.point.z], targetId });
     if (result.startedReload) effects.reloadSound(id);
   }
 
@@ -578,6 +738,12 @@ export function createGame(): GameHandle {
     if (!document.pointerLockElement && playing && !paused) pauseGame();
   };
   const onKeyDown = (e: KeyboardEvent) => {
+    // Character picker: <-/-> on the start screen or the pause menu (not while typing a name).
+    if ((!started || paused) && (e.code === "ArrowLeft" || e.code === "ArrowRight") && !(document.activeElement instanceof HTMLInputElement)) {
+      e.preventDefault();
+      stepCharacter(e.code === "ArrowLeft" ? -1 : 1);
+      return;
+    }
     if (!playing) return;
     if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Tab"].indexOf(e.code) >= 0) e.preventDefault();
     if (e.code === "Escape") {
@@ -688,6 +854,9 @@ export function createGame(): GameHandle {
    * distinct from the driver's own crash-damage health hit above). */
   const RAM_IMPACT_SPEED_RETENTION = 0.82;
 
+  const remoteCars: PhysicsVehicle[] = [];
+  const physicsCars: (readonly PhysicsVehicle[])[] = [vehicles, remoteCars];
+
   function step(dt: number): void {
     tClock += dt;
     signals.update(env.state.tod);
@@ -737,6 +906,10 @@ export function createGame(): GameHandle {
       if (v.mode === "parked") continue;
       visualVeh(v, dt, env.state.nightF);
     }
+    // Ragdoll physics (only steps while corpses exist): cars are kinematic pushers.
+    remoteCars.length = 0;
+    for (const rp of remotePlayers.all()) if (rp.car && rp.car.root.visible) remoteCars.push(rp.car);
+    corpses.step(physicsCars);
     if (player.mode === "car" && player.car) {
       const v = player.car;
       env.carSpot.position.set(v.x + Math.sin(v.yaw) * 1.5, 1.0, v.z + Math.cos(v.yaw) * 1.5);
@@ -795,7 +968,8 @@ export function createGame(): GameHandle {
       const dx = car.x - pos.x;
       const dz = car.z - pos.z;
       if (dx * dx + dz * dz >= rs * rs) continue;
-      hitPed(p);
+      // The body is thrown along the car's velocity (on top of being shoved by its proxy).
+      killPed(p, null, ramVelocity({ x: car.vx, y: 0, z: car.vz }));
       spookPedsNear(peds, pos.x, pos.z, 10);
       car.vx *= RAM_IMPACT_SPEED_RETENTION;
       car.vz *= RAM_IMPACT_SPEED_RETENTION;
@@ -836,8 +1010,10 @@ export function createGame(): GameHandle {
       camera.lookAt(0, 10, 0);
       env.update(dt, 0, 0, camera);
       renderer.render(scene, camera);
+      preview?.render(dt);
       return;
     }
+    if (paused) preview?.render(dt);
 
     if (playing && !paused) {
       // Weapon state: aiming/firing flags consumed by physics + fire logic below.
@@ -868,8 +1044,10 @@ export function createGame(): GameHandle {
           alive: player.alive,
         });
       }
-      updateCamera(cam, camera, player, dt, tClock, grid);
+      const focus = deathAt !== null && localCorpse && localCorpse.focus(corpseFocus) ? corpseFocus : null;
+      updateCamera(cam, camera, player, dt, tClock, grid, focus);
       env.update(dt, cam.fx, cam.fz, camera);
+      corpses.update(dt);
       effects.update(dt);
       remotePlayers.update(dt, env.state.nightF);
       updateHud(dt);
@@ -917,6 +1095,8 @@ export function createGame(): GameHandle {
     const armed = player.weapon !== "fists" && player.mode === "foot";
     const ammo = player.ammo[player.weapon];
     hud.setWeaponHud(player.weapon, ammo.mag, ammo.reserve, ammo.reloading, armed);
+    // Crosshair bloom = the real shot cone (spread) at the current FOV.
+    if (armed) hud.setCrosshairGap(spreadToCrosshairGap(totalSpread(WEAPONS[player.weapon], ammo), camera.fov, window.innerHeight));
     if (hud.isScoreboardVisible()) {
       const rows = [{ name: myName, kills: localKills, deaths: localDeaths, ping: localPing }];
       for (const rp of remotePlayers.all()) rows.push({ name: rp.name, kills: rp.kills, deaths: rp.deaths, ping: rp.ping });
@@ -943,6 +1123,62 @@ export function createGame(): GameHandle {
     drawMinimap(miniCtx, mapTexture, cam.yaw, cam.fx, cam.fz, headingYaw, dots);
   }
 
+  // ---------------- Character picker ----------------
+  // Start screen + pause menu: arrows / <- -> cycle through the models with a
+  // live turntable preview; the choice persists (localStorage), is announced
+  // to the server (setCharacter) and applied live by swapping our rig.
+  let preview: CharacterPreview | null = null;
+  const pickerHandlers: [Element, () => void][] = [];
+  const pickers = Array.from(document.querySelectorAll(".charPicker"));
+
+  function refreshPickers(): void {
+    for (const p of pickers) {
+      const name = p.querySelector(".charName");
+      if (name) name.textContent = CHARACTER_NAMES[localCharacter];
+    }
+    // The (single) preview canvas lives in whichever overlay is showing.
+    const visible = pickers.find((p) => !p.closest(".overlay")?.classList.contains("hidden"));
+    const stage = visible?.querySelector(".charStage");
+    if (preview && stage) preview.mount(stage);
+  }
+
+  function chooseCharacter(c: CharacterId): void {
+    if (!assetsReady || c === localCharacter) return;
+    chosenCharacter = c;
+    localCharacter = c;
+    saveCharacter(c);
+    net.setCharacter(c, true);
+    // Live swap keeps position/visibility; a body already lying as a corpse keeps its old model.
+    rebuildPlayerRig();
+    preview?.show(rigFactory, c);
+    refreshPickers();
+  }
+
+  function stepCharacter(delta: number): void {
+    chooseCharacter(cycleCharacter(localCharacter, delta));
+  }
+
+  function initCharacterPicker(): void {
+    for (const p of pickers) {
+      for (const [sel, delta] of [[".charPrev", -1], [".charNext", 1]] as const) {
+        const btn = p.querySelector(sel);
+        if (!(btn instanceof HTMLButtonElement)) continue;
+        btn.disabled = false;
+        const fn = () => stepCharacter(delta);
+        btn.addEventListener("click", fn);
+        pickerHandlers.push([btn, fn]);
+      }
+    }
+    try {
+      preview = new CharacterPreview();
+      preview.show(rigFactory, localCharacter);
+    } catch (err) {
+      console.warn("[picker] preview unavailable", err);
+      preview = null;
+    }
+    refreshPickers();
+  }
+
   // ---------------- Boot ----------------
   resize();
   env.update(0, 0, 0, camera);
@@ -958,20 +1194,34 @@ export function createGame(): GameHandle {
     btnPlay.textContent = loading ? "Cargando personajes…" : playLabel;
   }
   setPlayLoading(true);
-  loadCharacterAssets()
+  const factoryReady = loadCharacterAssets()
     .then((assets) => modelRigFactory(assets))
     .catch((err: unknown) => {
       console.warn("[assets] character models failed to load, using procedural humans", err);
       return proceduralRigFactory;
-    })
-    .then((factory) => {
+    });
+  // Rapier loads in parallel; a failure (null) keeps animated, non-physical corpses.
+  Promise.all([factoryReady, loadRapier()])
+    .then(([factory, R]) => {
       if (disposed) return;
+      if (R) {
+        try {
+          physics = new PhysicsWorld(R);
+          physics.addGround();
+          physics.addGridColliders(grid);
+          corpses.setPhysics(physics);
+        } catch (err) {
+          console.warn("[physics] could not build the ragdoll world, ragdolls disabled", err);
+          physics = null;
+        }
+      }
       rigFactory = factory;
       assetsReady = true;
       rebuildPlayerRig();
       remotePlayers.setRigFactory(factory);
       respawnPeds();
       setPlayLoading(false);
+      initCharacterPicker();
     });
 
   return {
@@ -981,8 +1231,12 @@ export function createGame(): GameHandle {
       net.close();
       player.mesh.dispose();
       despawnPeds();
+      corpses.clear();
+      physics?.dispose();
       remotePlayers.dispose();
       effects.dispose();
+      preview?.dispose();
+      for (const [el, fn] of pickerHandlers) el.removeEventListener("click", fn);
       btnPlay?.removeEventListener("click", onPlayClick);
       btnPause?.removeEventListener("click", onPauseClick);
       btnResume?.removeEventListener("click", onResumeClick);

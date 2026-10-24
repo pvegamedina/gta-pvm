@@ -7,7 +7,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { CHARACTER_IDS, type CharacterId } from "../characters/characterChoice";
-import { prepareWeaponTemplate, type GunId } from "../characters/weaponPose";
+import { prepareWeaponTemplate, liftColor, WEAPON_POSES, type GunId } from "../characters/weaponPose";
 
 export interface CharacterSource {
   /** Skinned source scene; never added to the world — instance it with SkeletonUtils.clone. */
@@ -22,7 +22,6 @@ export interface CharacterAssets {
 }
 
 const BASE_URL = "/models";
-const WEAPON_FILES: Record<GunId, string> = { pistol: "pistol", m4: "rifle" };
 /** Props embedded in some character GLBs — we attach our own guns instead. */
 const EMBEDDED_PROPS = new Set(["Pistol", "Sword"]);
 
@@ -34,8 +33,8 @@ const lambertCache = new Map<string, THREE.MeshLambertMaterial>();
  * used as display values. Converting to sRGB keeps the authored look instead
  * of rendering everything too dark.
  */
-function toLambert(src: THREE.Material): THREE.MeshLambertMaterial {
-  const color = ((src as THREE.MeshStandardMaterial).color ?? new THREE.Color(1, 1, 1)).clone().convertLinearToSRGB();
+function toLambert(src: THREE.Material, floor = 0): THREE.MeshLambertMaterial {
+  const color = liftColor(((src as THREE.MeshStandardMaterial).color ?? new THREE.Color(1, 1, 1)).clone().convertLinearToSRGB(), floor);
   const key = color.getHexString();
   let mat = lambertCache.get(key);
   if (!mat) {
@@ -46,11 +45,12 @@ function toLambert(src: THREE.Material): THREE.MeshLambertMaterial {
   return mat;
 }
 
-function convertMaterials(root: THREE.Object3D): void {
+/** `floor` lifts near-black colours (gunmetal) so they keep some shading. */
+function convertMaterials(root: THREE.Object3D, floor = 0): void {
   root.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (!mesh.isMesh) return;
-    mesh.material = Array.isArray(mesh.material) ? mesh.material.map(toLambert) : toLambert(mesh.material);
+    mesh.material = Array.isArray(mesh.material) ? mesh.material.map((m) => toLambert(m, floor)) : toLambert(mesh.material, floor);
   });
 }
 
@@ -76,9 +76,9 @@ async function loadAll(): Promise<CharacterAssets> {
     convertMaterials(gltf.scene);
     return [id, { scene: gltf.scene, clips: gltf.animations }] as const;
   });
-  const weaponEntries = (Object.keys(WEAPON_FILES) as GunId[]).map(async (id) => {
-    const gltf = await loader.loadAsync(`${BASE_URL}/weapons/${WEAPON_FILES[id]}.glb`);
-    convertMaterials(gltf.scene);
+  const weaponEntries = (Object.keys(WEAPON_POSES) as GunId[]).map(async (id) => {
+    const gltf = await loader.loadAsync(`${BASE_URL}/weapons/${WEAPON_POSES[id].file}.glb`);
+    convertMaterials(gltf.scene, WEAPON_POSES[id].colorFloor);
     gltf.scene.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) o.castShadow = true;
     });

@@ -1,6 +1,8 @@
 // Pedestrians: wander on a per-block sidewalk ring, dodge nearby fast traffic
-// and the on-foot player, flee from gunfire (run cycle), and play their death
-// animation then respawn when shot.
+// and the on-foot player, flee from gunfire (run cycle), and respawn a while
+// after being killed. On death game.ts normally detaches the ped's body into
+// a persistent corpse (physics/corpses.ts) and gives the ped a fresh, hidden
+// rig (`bodyTaken`); otherwise the old rig plays its death animation here.
 
 import * as THREE from "three";
 import { G, bc } from "../core/constants";
@@ -23,6 +25,8 @@ export interface Ped {
   state: "walk" | "down";
   downT: number;
   fleeT: number;
+  /** The dead body was detached as a corpse: keep the (fresh) rig hidden until respawn. */
+  bodyTaken?: boolean;
 }
 
 const RING_HS = 26.7;
@@ -82,6 +86,7 @@ function respawnPed(scene: THREE.Scene, p: Ped): void {
   p.state = "walk";
   p.downT = 0;
   p.ox = p.oz = 0;
+  p.bodyTaken = false;
   p.mesh.group.visible = true;
 }
 
@@ -102,7 +107,7 @@ export function updatePeds(
   for (const p of peds) {
     if (p.state === "down") {
       p.downT += dt;
-      if (p.downT > DOWN_RESPAWN_S * 0.4) p.mesh.group.visible = false;
+      if (p.bodyTaken || p.downT > DOWN_RESPAWN_S * 0.4) p.mesh.group.visible = false;
       else {
         _anim.alive = false;
         p.mesh.update(dt, _anim);
@@ -160,6 +165,13 @@ export function pedPosition(p: Ped): { x: number; z: number } {
   out.x += p.ox;
   out.z += p.oz;
   return out;
+}
+
+/** World-space walking velocity (m/s) of a living ped (its body inherits it on death). */
+export function pedVelocity(p: Ped): { x: number; y: number; z: number } {
+  if (p.state === "down") return { x: 0, y: 0, z: 0 };
+  const sp = p.speed * (p.fleeT > 0 ? 2.1 : 1);
+  return { x: Math.sin(p.yaw) * sp, y: 0, z: Math.cos(p.yaw) * sp };
 }
 
 /** Ped takes a hit: plays its death (see updatePeds) and starts the respawn timer. */

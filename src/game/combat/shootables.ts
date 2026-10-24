@@ -45,6 +45,8 @@ export interface RaycastShotResult {
   point: THREE.Vector3;
   hit: ShootableMeta | null;
   distance: number;
+  /** World-space normal of the face that was hit (bullet-hole decals), null on a miss. */
+  normal: THREE.Vector3 | null;
 }
 
 const raycaster = new THREE.Raycaster();
@@ -67,8 +69,11 @@ export function castShot(
   const hits = raycaster.intersectObjects(registry.list(), true);
   if (hits.length > 0) {
     const h = hits[0];
-    return { point: h.point.clone(), hit: registry.metaFor(h.object), distance: h.distance };
+    const normal = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : null;
+    // Face the shooter (back faces / mirrored transforms).
+    if (normal && normal.dot(dir) > 0) normal.negate();
+    return { point: h.point.clone(), hit: registry.metaFor(h.object), distance: h.distance, normal };
   }
   const end = origin.clone().addScaledVector(dir, range);
-  return { point: end, hit: null, distance: range };
+  return { point: end, hit: null, distance: range, normal: null };
 }
