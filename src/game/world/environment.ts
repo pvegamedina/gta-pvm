@@ -1,9 +1,15 @@
 // Sky dome, sun/moon sprites, stars, clouds and the day/night light update.
 // Ported from the legacy game's sky shader + updateEnv().
+//
+// Phase 5: the sun's orthographic shadow frustum is sized by the graphics
+// preset (setShadows) and its centre is snapped to the shadow-map texel grid
+// (world/shadowSnap.ts) so shadows don't shimmer while it follows the player;
+// the clouds are one InstancedMesh (one draw call instead of ~50).
 
 import * as THREE from "three";
 import { lerp, smooth } from "../core/math";
 import { radialTex } from "./materials";
+import { snapShadowCentre, type V3 } from "./shadowSnap";
 
 export interface EnvState {
   tod: number;
@@ -27,6 +33,8 @@ export interface Environment {
   sun: THREE.DirectionalLight;
   hemi: THREE.HemisphereLight;
   carSpot: THREE.SpotLight;
+  /** Graphics preset: sun shadows on/off, map resolution and frustum half size (m). */
+  setShadows(enabled: boolean, mapSize: number, halfSize: number): void;
 }
 
 export function createEnvironment(scene: THREE.Scene): Environment {
@@ -100,24 +108,37 @@ export function createEnvironment(scene: THREE.Scene): Environment {
     scene.add(stars);
   }
 
-  const clouds: THREE.Group[] = [];
-  {
-    const sg = new THREE.SphereGeometry(1, 8, 6);
-    const cm = new THREE.MeshLambertMaterial({ color: 0xffffff, fog: false });
-    for (let i = 0; i < 12; i++) {
-      const g = new THREE.Group();
-      const n = 3 + Math.floor(Math.random() * 3);
-      for (let k = 0; k < n; k++) {
-        const m = new THREE.Mesh(sg, cm);
-        m.scale.set(18 + Math.random() * 16, 7 + Math.random() * 4, 12 + Math.random() * 8);
-        m.position.set(k * 20 - n * 10, Math.random() * 4, Math.random() * 10);
-        g.add(m);
-      }
-      g.position.set((Math.random() - 0.5) * 1300, 130 + Math.random() * 50, (Math.random() - 0.5) * 1300);
-      scene.add(g);
-      clouds.push(g);
+  // Clouds: 12 clusters of 3-5 squashed spheres, all puffs in one InstancedMesh
+  // (positions are per puff: cluster centre + offset; clusters drift along x).
+  const CLOUDS = 12;
+  const cloudX = new Float32Array(CLOUDS);
+  const puffs: { cloud: number; ox: number; y: number; z: number; sx: number; sy: number; sz: number }[] = [];
+  for (let i = 0; i < CLOUDS; i++) {
+    cloudX[i] = (Math.random() - 0.5) * 1300;
+    const cy = 130 + Math.random() * 50;
+    const cz = (Math.random() - 0.5) * 1300;
+    const n = 3 + Math.floor(Math.random() * 3);
+    for (let k = 0; k < n; k++) {
+      puffs.push({ cloud: i, ox: k * 20 - n * 10, y: cy + Math.random() * 4, z: cz + Math.random() * 10, sx: 18 + Math.random() * 16, sy: 7 + Math.random() * 4, sz: 12 + Math.random() * 8 });
     }
   }
+  const cloudMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 8, 6), new THREE.MeshLambertMaterial({ color: 0xffffff, fog: false }), puffs.length);
+  cloudMesh.name = "clouds";
+  // Puffs span the sky and drift: skip culling (one draw call anyway).
+  cloudMesh.frustumCulled = false;
+  scene.add(cloudMesh);
+  const cloudM = new THREE.Matrix4();
+  const cloudQ = new THREE.Quaternion();
+  const cloudP = new THREE.Vector3();
+  const cloudS = new THREE.Vector3();
+  function placeClouds(): void {
+    puffs.forEach((p, i) => {
+      cloudM.compose(cloudP.set(cloudX[p.cloud] + p.ox, p.y, p.z), cloudQ, cloudS.set(p.sx, p.sy, p.sz));
+      cloudMesh.setMatrixAt(i, cloudM);
+    });
+    cloudMesh.instanceMatrix.needsUpdate = true;
+  }
+  placeClouds();
 
   const cTopDay = new THREE.Color(0x2f7fd8);
   const cBotDay = new THREE.Color(0xbfdcf2);
@@ -149,8 +170,33 @@ export function createEnvironment(scene: THREE.Scene): Environment {
     s.far = 500;
   }
   sun.shadow.bias = -0.0006;
+  // Layer 1 = shadow-only casters (vehicle shadow proxies, vehicles/meshes.ts SHADOW_ONLY_LAYER).
+  sun.shadow.camera.layers.enable(1);
   scene.add(sun);
   scene.add(sun.target);
+  /** Shadow-map texel size (m): frustum width / map resolution (texel snapping). */
+  let shadowTexel = 160 / 2048;
+  const focus: V3 = { x: 0, y: 0, z: 0 };
+  const snapped: V3 = { x: 0, y: 0, z: 0 };
+
+  function setShadows(enabled: boolean, mapSize: number, halfSize: number): void {
+    sun.castShadow = enabled;
+    const s = sun.shadow.camera;
+    if (s.right !== halfSize) {
+      s.left = -halfSize;
+      s.right = halfSize;
+      s.top = halfSize;
+      s.bottom = -halfSize;
+      s.updateProjectionMatrix();
+    }
+    if (sun.shadow.mapSize.x !== mapSize) {
+      sun.shadow.mapSize.set(mapSize, mapSize);
+      // three re-creates the render target at the new size when the map is gone.
+      sun.shadow.map?.dispose();
+      sun.shadow.map = null;
+    }
+    shadowTexel = (2 * halfSize) / mapSize;
+  }
 
   const carSpot = new THREE.SpotLight(0xfff2cc, 0, 70, 0.5, 0.5, 1);
   carSpot.decay = 1;
@@ -189,8 +235,13 @@ export function createEnvironment(scene: THREE.Scene): Environment {
       sun.color.copy(moonCol);
       sun.intensity = 0.3 * smooth(-0.02, 0.2, -sunH) * Math.PI;
     }
-    sun.target.position.set(fx, fy, fz);
-    sun.position.set(fx + lightDir.x * 200, fy + lightDir.y * 200, fz + lightDir.z * 200);
+    // Follow the focus, snapped to whole shadow texels (no shimmering edges).
+    focus.x = fx;
+    focus.y = fy;
+    focus.z = fz;
+    snapShadowCentre(focus, lightDir, shadowTexel, snapped);
+    sun.target.position.set(snapped.x, snapped.y, snapped.z);
+    sun.position.set(snapped.x + lightDir.x * 200, snapped.y + lightDir.y * 200, snapped.z + lightDir.z * 200);
     skyMesh.position.copy(camera.position);
     sunSprite.position.copy(camera.position).addScaledVector(sv, 800);
     sunSprite.visible = sunH > -0.06;
@@ -202,10 +253,12 @@ export function createEnvironment(scene: THREE.Scene): Environment {
     if (lightMats.bulb) lightMats.bulb.color.setRGB(lerp(0.55, 1, state.nightF), lerp(0.55, 0.95, state.nightF), lerp(0.5, 0.75, state.nightF));
     if (lightMats.pool) lightMats.pool.opacity = state.nightF * 0.8;
     if (lightMats.head) lightMats.head.emissiveIntensity = 0.25 + state.nightF * 1.4;
-    for (let i = 0; i < clouds.length; i++) {
-      const c = clouds[i];
-      c.position.x += dt * 3;
-      if (c.position.x > 700) c.position.x = -700;
+    if (dt > 0) {
+      for (let i = 0; i < CLOUDS; i++) {
+        cloudX[i] += dt * 3;
+        if (cloudX[i] > 700) cloudX[i] = -700;
+      }
+      placeClouds();
     }
   }
 
@@ -225,5 +278,6 @@ export function createEnvironment(scene: THREE.Scene): Environment {
     sun,
     hemi,
     carSpot,
+    setShadows,
   };
 }

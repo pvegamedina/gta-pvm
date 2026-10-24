@@ -9,8 +9,38 @@ import { liftColor } from "../characters/weaponPose";
 
 export const MODELS_URL = "/models";
 
+/** Per-file load events (loading screen progress): a request started, finished or failed. */
+export type AssetLoadEvent = "start" | "end" | "error";
+type AssetListener = (url: string, event: AssetLoadEvent) => void;
+const assetListeners = new Set<AssetListener>();
+
+/**
+ * One LoadingManager shared by every GLB loader, whose per-item hooks also
+ * notify the listeners registered with onAssetLoad (the loading screen maps
+ * each URL to its stage). LoadingManager defines these hooks per instance,
+ * so wrapping them here touches nothing global.
+ */
+const assetManager = new THREE.LoadingManager();
+for (const [hook, event] of [
+  ["itemStart", "start"],
+  ["itemEnd", "end"],
+  ["itemError", "error"],
+] as const) {
+  const original = assetManager[hook].bind(assetManager);
+  assetManager[hook] = (url: string) => {
+    original(url);
+    for (const fn of assetListeners) fn(url, event);
+  };
+}
+
+/** Subscribes to GLB load events; returns the unsubscribe function. */
+export function onAssetLoad(fn: AssetListener): () => void {
+  assetListeners.add(fn);
+  return () => assetListeners.delete(fn);
+}
+
 export function createGltfLoader(): GLTFLoader {
-  const loader = new GLTFLoader();
+  const loader = new GLTFLoader(assetManager);
   loader.setMeshoptDecoder(MeshoptDecoder);
   return loader;
 }

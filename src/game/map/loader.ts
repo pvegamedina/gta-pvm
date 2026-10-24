@@ -268,9 +268,46 @@ export function parseCampusMap(input: unknown): CampusMap {
   return { ...file, terrainGrid };
 }
 
-/** Fetches and parses the map (browser, or Node ≥ 18 with an absolute URL). */
-export async function fetchCampusMap(url: string = CAMPUS_MAP_URL, fetchImpl: typeof fetch = fetch): Promise<CampusMap> {
+/** Expected decoded size (bytes) when the server sends no usable Content-Length (compressed). */
+const MAP_SIZE_ESTIMATE = 900_000;
+
+/**
+ * Reads a response body as text, reporting download progress 0..1 (from
+ * Content-Length when the body is not re-encoded, else an estimate kept
+ * below 1); reports exactly 1 once the whole body is in.
+ */
+async function readText(res: Response, onProgress?: (fraction: number) => void): Promise<string> {
+  if (!onProgress || !res.body) {
+    const text = await res.text();
+    onProgress?.(1);
+    return text;
+  }
+  const length = Number(res.headers.get("content-length"));
+  const exact = Number.isFinite(length) && length > 0 && !res.headers.get("content-encoding");
+  const expected = exact ? length : MAP_SIZE_ESTIMATE;
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    onProgress(Math.min(exact ? 0.999 : 0.95, received / expected));
+  }
+  const all = new Uint8Array(received);
+  let o = 0;
+  for (const c of chunks) {
+    all.set(c, o);
+    o += c.length;
+  }
+  onProgress(1);
+  return new TextDecoder().decode(all);
+}
+
+/** Fetches and parses the map (browser, or Node ≥ 18 with an absolute URL); `onProgress` gets the download fraction. */
+export async function fetchCampusMap(url: string = CAMPUS_MAP_URL, fetchImpl: typeof fetch = fetch, onProgress?: (fraction: number) => void): Promise<CampusMap> {
   const res = await fetchImpl(url);
   if (!res.ok) throw new Error(`Failed to load campus map ${url}: HTTP ${res.status}`);
-  return parseCampusMap(await res.text());
+  return parseCampusMap(await readText(res, onProgress));
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CAMPUS_MAP_VERSION, type CampusMapFile } from "../types";
-import { MapValidationError, parseCampusMap } from "../loader";
+import { MapValidationError, fetchCampusMap, parseCampusMap } from "../loader";
 import { encodeTerrainHeights } from "../terrain";
 
 /** Smallest map that satisfies every invariant of the schema. */
@@ -122,5 +122,41 @@ describe("parseCampusMap", () => {
   it("rejects non-object input and invalid JSON", () => {
     expect(() => parseCampusMap(42)).toThrow(MapValidationError);
     expect(() => parseCampusMap("{not json")).toThrow(MapValidationError);
+  });
+});
+
+describe("fetchCampusMap progress", () => {
+  /** A fetch stub streaming `text` in `chunks` pieces, with or without Content-Length. */
+  function streamingFetch(text: string, chunks: number, withLength: boolean): typeof fetch {
+    const bytes = new TextEncoder().encode(text);
+    const size = Math.ceil(bytes.length / chunks);
+    return (async () => {
+      let i = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull(ctrl) {
+          if (i * size >= bytes.length) return ctrl.close();
+          ctrl.enqueue(bytes.slice(i * size, (i + 1) * size));
+          i++;
+        },
+      });
+      const headers = withLength ? { "content-length": String(bytes.length) } : undefined;
+      return new Response(body, { status: 200, headers });
+    }) as unknown as typeof fetch;
+  }
+
+  it("reports monotonic progress up to 1 and still parses the map", async () => {
+    const seen: number[] = [];
+    const map = await fetchCampusMap("x", streamingFetch(JSON.stringify(minimalMap()), 5, true), (f) => seen.push(f));
+    expect(map.spawns).toHaveLength(1);
+    expect(seen.length).toBeGreaterThanOrEqual(3);
+    for (let i = 1; i < seen.length; i++) expect(seen[i]).toBeGreaterThanOrEqual(seen[i - 1]);
+    expect(seen.at(-1)).toBe(1);
+  });
+
+  it("estimates progress below 1 without a Content-Length, then reports 1 at the end", async () => {
+    const seen: number[] = [];
+    await fetchCampusMap("x", streamingFetch(JSON.stringify(minimalMap()), 4, false), (f) => seen.push(f));
+    expect(seen.slice(0, -1).every((f) => f < 1)).toBe(true);
+    expect(seen.at(-1)).toBe(1);
   });
 });

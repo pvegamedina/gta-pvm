@@ -3,6 +3,10 @@
 // networking, and runs the fixed-step game loop.
 // Deaths hand the body over to physics/corpses.ts (Rapier ragdolls, local and
 // visual only) so it stays on the ground while the entity respawns fresh.
+// Phase 5: player settings (settings/*: pause-menu panel, graphics presets
+// applied live, persisted), the boot loading bar (loading/*), the ambient
+// soundscape + footsteps + car doors (audio/ambience*), vehicle VFX
+// (vehicles/vehicleVfx.ts) and the F3 performance overlay (hud/perfHud.ts).
 
 import * as THREE from "three";
 import {
@@ -76,6 +80,18 @@ import { RemotePlayerManager } from "./net/remotePlayers";
 
 import { Hud } from "./hud/hud";
 import { createPlaceTracker, updateBuildingName, updateStreetName } from "./hud/placeNames";
+import { PerfHud } from "./hud/perfHud";
+
+import { defaultPreset, loadSettings, saveSettings, type Settings, type SettingsStorage } from "./settings/settings";
+import { PRESET_LABELS, presetConfig } from "./settings/graphicsPresets";
+import { applyGraphics } from "./settings/graphics";
+import { SettingsMenu } from "./settings/settingsMenu";
+import { LoadingScreen } from "./loading/loadingScreen";
+import { getViewScale } from "./world/lod";
+import { createGroundClassifier, type GroundSurface } from "./world/campus/groundMaterial";
+import { FootstepClock, ambienceMix, footstepGain } from "./audio/ambience";
+import { VehicleVfx } from "./vehicles/vehicleVfx";
+import { tyreSlip } from "./vehicles/vfxLogic";
 
 export interface GameHandle {
   dispose(): void;
@@ -86,9 +102,6 @@ const $ = (id: string) => document.getElementById(id);
 /** Procedural-fallback look of the local player (the model rig ignores it). */
 const PLAYER_COLORS: HumanColors = { skin: 0xe0ac84, shirt: 0xd9442b, pants: 0x2b3a55, hair: 0x2a1c14, shoe: 0xf0f0f0 };
 const PED_COUNT = 32;
-/** Fog start/end (m): the campus is ~1.2 km across. */
-const FOG_NEAR = 160;
-const FOG_FAR = 1100;
 /** Seconds between traffic upkeep passes (despawn far cars, top up near the player). */
 const TRAFFIC_UPKEEP_S = 0.5;
 /** Vehicles farther than this from the camera focus are not drawn (m). */
@@ -98,6 +111,15 @@ const KILL_SHOT_MAX_AGE = 0.8;
 const KILL_SHOT_MAX_DIST = 2.2;
 /** Share of a body (kg) the bumper of a ramming car shoves. */
 const RAM_MASS = 40;
+
+/** localStorage, or null where it is unavailable (private mode, blocked site data). */
+function settingsStorage(): SettingsStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
 
 function loadName(): string {
   try {
@@ -165,15 +187,19 @@ export function createGame(): GameHandle {
 
   const canvas = $("c") as HTMLCanvasElement;
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
-  renderer.shadowMap.enabled = true;
+  // Pixel ratio, shadows, fog and the camera far plane come from the graphics preset (applySettings).
   // r186 deprecated PCFSoftShadowMap in favor of PCFShadowMap (same soft-shadow behavior).
   renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 
+  // Player settings: stored ones, else defaults with a preset guessed from the device.
+  let settings: Settings = loadSettings(
+    settingsStorage(),
+    defaultPreset({ devicePixelRatio: window.devicePixelRatio, hardwareConcurrency: navigator.hardwareConcurrency }),
+  );
+
   const scene = new THREE.Scene();
-  // Fog/far plane sized for the ~1.2 km campus.
-  scene.fog = new THREE.Fog(0xbfdcf2, FOG_NEAR, FOG_FAR);
+  scene.fog = new THREE.Fog(0xbfdcf2, 160, 1100);
   const camera = new THREE.PerspectiveCamera(65, 1, 0.5, 2500);
 
   const env = createEnvironment(scene);
@@ -317,6 +343,45 @@ export function createGame(): GameHandle {
   const remotePlayers = new RemotePlayerManager(scene, shootables);
   const hud = new Hud();
   const miniCtx = ($("mini") as HTMLCanvasElement).getContext("2d")!;
+  const perfHud = new PerfHud();
+  const vfx = new VehicleVfx(scene);
+  /** Ground surface lookup (footsteps, dust); real once the map is loaded. */
+  let groundAt: (x: number, z: number) => GroundSurface = () => "asphalt";
+  const footClock = new FootstepClock();
+  /** Footsteps played and the last surface (dev telemetry: audio can't be heard in automated checks). */
+  const stepStats = { count: 0, surface: "" as GroundSurface | "" };
+
+  // ---------------- Settings ----------------
+  /** Mouse-look multiplier (settings). */
+  let mouseSens = settings.mouseSensitivity;
+  let graphicsApplied = false;
+  /** Applies settings live (audio buses, mouse, graphics preset, perf HUD) and persists them. */
+  function applySettings(next: Settings, persist = true): void {
+    const presetChanged = !graphicsApplied || next.preset !== settings.preset;
+    settings = next;
+    mouseSens = next.mouseSensitivity;
+    audio.setVolumes(next.masterVolume, next.sfxVolume, next.ambienceVolume);
+    if (presetChanged) {
+      applyGraphics(presetConfig(next.preset), { renderer, scene, camera, env });
+      graphicsApplied = true;
+    }
+    perfHud.setVisible(next.showPerf);
+    if (persist) saveSettings(next, settingsStorage());
+  }
+  const settingsMenu = new SettingsMenu(settings, (s) => applySettings(s), () => {
+    // Back to the pause menu (if we are still paused).
+    if (paused) $("pause")?.classList.remove("hidden");
+  });
+  function openSettings(): void {
+    if (!paused) return;
+    $("pause")?.classList.add("hidden");
+    settingsMenu.open();
+  }
+  function togglePerfHud(): void {
+    const next = { ...settings, showPerf: !settings.showPerf };
+    applySettings(next);
+    settingsMenu.set(next);
+  }
 
   // ---------------- Networking ----------------
   let myId: string | null = null;
@@ -625,6 +690,7 @@ export function createGame(): GameHandle {
   function resetGame(): void {
     corpses.clear();
     effects.clear();
+    vfx.clear();
     localCorpse = null;
     recentShots.length = 0;
     cam.recoil.reset();
@@ -706,10 +772,14 @@ export function createGame(): GameHandle {
   function interact(): void {
     if (player.mode === "car") {
       if (!exitCar(player, grid, vehicles)) toast("Frena para poder salir");
+      else audio.door(false);
       return;
     }
     const v = nearestVehicle(player, vehicles);
-    if (v) enterCar(player, v);
+    if (v) {
+      enterCar(player, v);
+      audio.door(true);
+    }
   }
 
   function switchWeapon(w: WeaponId): void {
@@ -816,6 +886,17 @@ export function createGame(): GameHandle {
     if (!document.pointerLockElement && playing && !paused) pauseGame();
   };
   const onKeyDown = (e: KeyboardEvent) => {
+    if (e.code === "F3") {
+      // Frame-time overlay (the browser's own F3 is "find").
+      e.preventDefault();
+      if (!e.repeat) togglePerfHud();
+      return;
+    }
+    // The settings panel takes the keyboard: Esc goes back to the pause menu.
+    if (settingsMenu.isOpen()) {
+      if (e.code === "Escape") settingsMenu.close();
+      return;
+    }
     // Character picker: <-/-> on the start screen or the pause menu (not while typing a name).
     if ((!started || paused) && (e.code === "ArrowLeft" || e.code === "ArrowRight") && !(document.activeElement instanceof HTMLInputElement)) {
       e.preventDefault();
@@ -881,8 +962,8 @@ export function createGame(): GameHandle {
   const onMouseMove = (e: MouseEvent) => {
     if (!playing || paused) return;
     if (document.pointerLockElement !== canvas && !dragging) return;
-    cam.yaw -= (e.movementX || 0) * 0.0022;
-    cam.pitch = clamp(cam.pitch + (e.movementY || 0) * 0.0018, -0.15, 1.2);
+    cam.yaw -= (e.movementX || 0) * 0.0022 * mouseSens;
+    cam.pitch = clamp(cam.pitch + (e.movementY || 0) * 0.0018 * mouseSens, -0.15, 1.2);
     cam.lastMouse = tClock;
   };
   const onWheel = (e: WheelEvent) => {
@@ -895,6 +976,8 @@ export function createGame(): GameHandle {
   const btnRestart = $("btnRestart");
   const btnRestart2 = $("btnRestart2");
   const btnSound = $("btnSound");
+  const btnSettings = $("btnSettings");
+  const onSettingsClick = () => openSettings();
   const onPlayClick = () => startGame();
   const onPauseClick = () => (paused ? resumeGame() : pauseGame());
   const onResumeClick = () => resumeGame();
@@ -911,6 +994,7 @@ export function createGame(): GameHandle {
   btnRestart?.addEventListener("click", onRestartClick);
   btnRestart2?.addEventListener("click", onRestartClick);
   btnSound?.addEventListener("click", onSoundClick);
+  btnSettings?.addEventListener("click", onSettingsClick);
   window.addEventListener("resize", onResize);
   window.addEventListener("blur", onBlur);
   document.addEventListener("visibilitychange", onVisibility);
@@ -992,7 +1076,7 @@ export function createGame(): GameHandle {
     updatePeds(peds, dt, vehicles, player, cam.fx, cam.fz, w.footNet);
     for (const v of vehicles) {
       // Far cars are hidden (the fog hides them anyway; saves their draw calls).
-      v.root.visible = v.mode === "player" || Math.hypot(v.x - cam.fx, v.z - cam.fz) < VEHICLE_VIEW;
+      v.root.visible = v.mode === "player" || Math.hypot(v.x - cam.fx, v.z - cam.fz) < VEHICLE_VIEW * getViewScale();
       if (v.mode === "parked" && v.visual.settled) continue;
       visualVeh(v, dt, env.state.nightF);
     }
@@ -1150,7 +1234,8 @@ export function createGame(): GameHandle {
 
   function frame(t: number): void {
     rafId = requestAnimationFrame(frame);
-    const dt = Math.min(0.1, (t - last) / 1000 || 0);
+    const rawMs = t - last;
+    const dt = Math.min(0.1, rawMs / 1000 || 0);
     last = t;
 
     if (!started) {
@@ -1162,6 +1247,7 @@ export function createGame(): GameHandle {
       camera.lookAt(c.x, c.y, c.z);
       env.update(dt, c.x, c.z, camera, c.y);
       renderer.render(scene, camera);
+      perfFrame(rawMs, dt);
       preview?.render(dt);
       return;
     }
@@ -1211,6 +1297,8 @@ export function createGame(): GameHandle {
       remotePlayers.update(dt, env.state.nightF);
       updateHud(dt);
       updateAudioFx(dt);
+      updateFootsteps(dt);
+      updateVfx(dt);
 
       if (deathAt !== null) {
         const left = Math.max(0, (deathAt + RESPAWN_DELAY_MS / 1000 - tClock));
@@ -1229,6 +1317,66 @@ export function createGame(): GameHandle {
       updateAudioFx(dt);
     }
     renderer.render(scene, camera);
+    perfFrame(rawMs, dt);
+  }
+
+  /** Feeds the F3 overlay with this frame's time and the renderer's counters (read right after render). */
+  function perfFrame(rawMs: number, dt: number): void {
+    if (!(rawMs > 0) || rawMs > 1000) return;
+    const cfg = presetConfig(settings.preset);
+    perfHud.update(rawMs, dt, renderer.info, `Calidad ${PRESET_LABELS[settings.preset]} · Sombras ${cfg.shadows ? cfg.shadowMapSize : "no"} · Escala ${renderer.getPixelRatio().toFixed(2)}`);
+  }
+
+  /** Footsteps on the surface under the player, at the locomotion cadence (jump landings too). */
+  function updateFootsteps(dt: number): void {
+    if (player.mode !== "foot" || !player.alive) {
+      footClock.step(dt, 0, true);
+      return;
+    }
+    const speed = footSpeed(player);
+    const ev = footClock.step(dt, speed, player.ground);
+    if (ev === "none") return;
+    const surface = groundAt(player.x, player.z);
+    audio.footstep(surface, footstepGain(speed, ev === "land"));
+    stepStats.count++;
+    stepStats.surface = surface;
+  }
+
+  /** Reused VFX inputs (no garbage per frame). */
+  const vfxVehicles: Vehicle[] = [];
+  const vfxPlayer = { car: null as unknown as Vehicle, throttle: 0, handbrake: false, hardBrake: 0, slip: 0 };
+  const vfxGround = (x: number, z: number) => groundY(x, z);
+  const vfxSurface = (x: number, z: number) => groundAt(x, z);
+  const vfxFrame = {
+    dt: 0,
+    time: 0,
+    camera,
+    viewportHeight: 1,
+    nightF: 0,
+    player: null as typeof vfxPlayer | null,
+    vehicles: vfxVehicles as Iterable<Vehicle>,
+    groundY: vfxGround,
+    surfaceAt: vfxSurface,
+  };
+
+  function updateVfx(dt: number): void {
+    vfxVehicles.length = 0;
+    for (const v of vehicles) vfxVehicles.push(v);
+    for (const rp of remotePlayers.all()) if (rp.car) vfxVehicles.push(rp.car);
+    const car = player.mode === "car" && player.alive ? player.car : null;
+    if (car) {
+      vfxPlayer.car = car;
+      vfxPlayer.throttle = localSound.throttle;
+      vfxPlayer.handbrake = !!keys.Space;
+      vfxPlayer.hardBrake = carHardBrake;
+      vfxPlayer.slip = localSound.slip;
+    }
+    vfxFrame.dt = dt;
+    vfxFrame.time = tClock;
+    vfxFrame.viewportHeight = renderer.domElement.height;
+    vfxFrame.nightF = env.state.nightF;
+    vfxFrame.player = car ? vfxPlayer : null;
+    vfx.update(vfxFrame);
   }
 
   /** Pitch (rad, + = up) of the view ray without the recoil kick (the held gun has its own). */
@@ -1239,6 +1387,8 @@ export function createGame(): GameHandle {
 
   /** Reused per-frame vehicle audio inputs (no garbage per frame for our car). */
   const localSound: LocalVehicleSound = { type: "sedan", topSpeed: 40, wheelRadius: 0.36, speed: 0, throttle: 0, slip: 0 };
+  /** 0..1 service-brake bite this frame (S while rolling forward): skid marks + screech. */
+  let carHardBrake = 0;
   const remoteSounds: RemoteVehicleSound[] = [];
   const sirenSounds: SirenSource[] = [];
 
@@ -1253,11 +1403,10 @@ export function createGame(): GameHandle {
       localSound.speed = car.speed;
       // Backing up, the reverse pedal (S) is the accelerator.
       localSound.throttle = car.speed < -0.5 ? (back ? 1 : 0) : fwd ? 1 : 0;
-      // Tyre slip: sideways speed (car frame) plus handbrake skids.
+      // Tyre slip: sideways speed (car frame), handbrake skids and locked-up hard braking.
       const lateral = Math.abs(car.vx * Math.cos(car.yaw) - car.vz * Math.sin(car.yaw));
-      let slip = clamp((lateral - 1.2) / 4, 0, 1);
-      if (keys.Space && Math.abs(car.speed) > 4) slip = Math.max(slip, clamp(Math.abs(car.speed) / 15, 0.3, 0.9));
-      localSound.slip = slip;
+      carHardBrake = back && car.speed > 0.5 ? 1 : 0;
+      localSound.slip = tyreSlip({ lateral, speed: Math.abs(car.speed), handbrake: !!keys.Space, hardBrake: carHardBrake });
     }
     remoteSounds.length = 0;
     const right = cameraRight(cam.yaw);
@@ -1278,6 +1427,10 @@ export function createGame(): GameHandle {
       sirenSounds.push({ id, distance: d, pan: d > 0.1 ? ((dx * right.x + dz * right.z) / d) * 0.8 : 0 });
     });
     audio.updateSirens(playing && !paused, sirenSounds);
+    // Ambient bed: day/night crossfade, wind from height above the lowest ground and speed.
+    const minH = world?.map.terrain.minHeight ?? 0;
+    const listenerSpeed = car ? Math.abs(car.speed) * 0.6 : footSpeed(player);
+    audio.updateAmbience(dt, playing && !paused, ambienceMix(env.state.nightF, player.y - minH, listenerSpeed));
   }
 
   // ---------------- Location toasts (street names, campus buildings) ----------------
@@ -1413,6 +1566,7 @@ export function createGame(): GameHandle {
   }
 
   // ---------------- Boot ----------------
+  applySettings(settings, false);
   resize();
   env.update(0, 0, 0, camera);
   rafId = requestAnimationFrame(frame);
@@ -1420,68 +1574,91 @@ export function createGame(): GameHandle {
   // The attract camera renders right away; "Jugar" waits for the campus map
   // (built as soon as it arrives) and the character models. A failed model
   // load falls back to procedural humans / box cars; a failed map is fatal.
+  // Every stage reports to the loading bar (failures count as settled).
+  const loading = new LoadingScreen();
   const playLabel = btnPlay?.textContent ?? "Jugar";
-  function setPlayLoading(loading: boolean, label = "Cargando campus…"): void {
+  function setPlayLoading(loadingNow: boolean, label = "Cargando…"): void {
     if (!(btnPlay instanceof HTMLButtonElement)) return;
-    btnPlay.disabled = loading;
-    btnPlay.textContent = loading ? label : playLabel;
+    btnPlay.disabled = loadingNow;
+    btnPlay.textContent = loadingNow ? label : playLabel;
   }
   setPlayLoading(true);
-  const factoryReady = loadCharacterAssets()
+  const factoryReady = loading
+    .track("characters", loadCharacterAssets())
     .then((assets) => modelRigFactory(assets))
     .catch((err: unknown) => {
       console.warn("[assets] character models failed to load, using procedural humans", err);
       return proceduralRigFactory;
     });
   // Vehicle models load in parallel too; a failure keeps the procedural box stand-ins.
-  const vehiclesReady = loadVehicleAssets().catch((err: unknown) => {
+  const vehiclesReady = loading.track("vehicles", loadVehicleAssets()).catch((err: unknown) => {
     console.warn("[assets] vehicle models failed to load, using procedural cars", err);
   });
-  // The campus map and the vegetation models.
-  const mapReady: Promise<CampusMap | null> = fetchCampusMap().catch((err: unknown) => {
-    console.error("[map] could not load the campus map", err);
-    return null;
-  });
-  const natureReady: Promise<NatureAssets | null> = loadNatureAssets().catch((err: unknown) => {
+  // The campus map (download progress) and the vegetation models.
+  const mapReady: Promise<CampusMap | null> = loading
+    .track("map", fetchCampusMap(undefined, undefined, (f) => loading.progress.progress("map", f)))
+    .catch((err: unknown) => {
+      console.error("[map] could not load the campus map", err);
+      return null;
+    });
+  const natureReady: Promise<NatureAssets | null> = loading.track("nature", loadNatureAssets()).catch((err: unknown) => {
     console.warn("[assets] nature models failed to load, the campus will have no trees", err);
     return null;
   });
-  const megakitReady: Promise<MegakitAssets | null> = loadMegakit().catch((err: unknown) => {
+  const megakitReady: Promise<MegakitAssets | null> = loading.track("megakit", loadMegakit()).catch((err: unknown) => {
     console.warn("[assets] MegaKit facade modules failed to load, buildings keep their plain walls", err);
     return null;
   });
-  const propsReady: Promise<PropAssets | null> = loadPropAssets().catch((err: unknown) => {
+  const propsReady: Promise<PropAssets | null> = loading.track("props", loadPropAssets()).catch((err: unknown) => {
     console.warn("[assets] street prop models failed to load, no bicycles / cones / model traffic lights", err);
     return null;
   });
+  const rapierReady = loading.track("physics", loadRapier());
+  /** Resolves after the browser painted a frame (so the "building" label shows before the blocking build). */
+  const nextPaint = () => new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 0)));
   // Build the world as soon as the map (and trees) are in, so the attract view shows it.
-  const worldReady = Promise.all([mapReady, natureReady, megakitReady, propsReady]).then(([map, nature, megakit, props]) => {
-    if (disposed || !map) return null;
-    const t0 = performance.now();
-    const w = buildCampusWorld(scene, map, env, grid, shootables, anisotropy);
-    if (nature) w.addNature(nature);
-    if (megakit) {
-      w.addFacades(megakit);
-      // Attract mode orbits the whole campus: dress every building until the game starts.
-      w.facades?.update(w.centre.x, w.centre.z, true);
+  const worldReady = Promise.all([mapReady, natureReady, megakitReady, propsReady]).then(async ([map, nature, megakit, props]) => {
+    if (disposed || !map) {
+      loading.progress.fail("world");
+      return null;
     }
-    w.addFurniture(props, megakit);
-    if (props) w.signals.useModel(props.get("traffic_light") ?? null);
-    roadIndex = createRoadIndex(map.roads);
-    world = w;
-    console.info(
-      `[world] campus built in ${Math.round(performance.now() - t0)} ms: roads ${w.roads.stats.triangles} tris, buildings ${w.buildings.stats.triangles} tris, ` +
-        `${w.nature?.stats.trees ?? 0} trees + ${w.nature?.stats.scatter ?? 0} scatter, ${w.signals.count} signal heads, ` +
-        `${w.facades?.stats.instances ?? 0} facade instances on ${w.facades?.stats.buildings ?? 0} buildings`,
-    );
-    return w;
+    loading.announce("world");
+    await nextPaint();
+    if (disposed) return null;
+    try {
+      const t0 = performance.now();
+      const w = buildCampusWorld(scene, map, env, grid, shootables, anisotropy);
+      if (nature) w.addNature(nature);
+      if (megakit) {
+        w.addFacades(megakit);
+        // Attract mode orbits the whole campus: dress every building until the game starts.
+        w.facades?.update(w.centre.x, w.centre.z, true);
+      }
+      w.addFurniture(props, megakit);
+      if (props) w.signals.useModel(props.get("traffic_light") ?? null);
+      roadIndex = createRoadIndex(map.roads);
+      groundAt = createGroundClassifier(map.roads, map.landuse);
+      world = w;
+      console.info(
+        `[world] campus built in ${Math.round(performance.now() - t0)} ms: roads ${w.roads.stats.triangles} tris, buildings ${w.buildings.stats.triangles} tris, ` +
+          `${w.nature?.stats.trees ?? 0} trees + ${w.nature?.stats.scatter ?? 0} scatter, ${w.signals.count} signal heads, ` +
+          `${w.facades?.stats.instances ?? 0} facade instances on ${w.facades?.stats.buildings ?? 0} buildings`,
+      );
+      loading.progress.done("world");
+      return w;
+    } catch (err) {
+      console.error("[world] could not build the campus", err);
+      loading.progress.fail("world");
+      return null;
+    }
   });
   // Rapier loads in parallel; a failure (null) keeps animated, non-physical corpses.
-  Promise.all([factoryReady, loadRapier(), vehiclesReady, worldReady])
+  Promise.all([factoryReady, rapierReady, vehiclesReady, worldReady])
     .then(([factory, R, , w]) => {
       if (disposed) return;
       if (!w) {
         setPlayLoading(true, "Error al cargar el mapa");
+        loading.showError("Error al cargar el mapa");
         const err = $("err");
         if (err) err.textContent = "No se pudo cargar el mapa del campus. Recarga la página para intentarlo de nuevo.";
         return;
@@ -1503,6 +1680,7 @@ export function createGame(): GameHandle {
       rebuildPlayerRig();
       remotePlayers.setRigFactory(factory);
       remotePlayers.refreshCars();
+      loading.finish();
       setPlayLoading(false);
       initCharacterPicker();
     });
@@ -1600,6 +1778,17 @@ export function createGame(): GameHandle {
       buildingEntrances: () =>
         world?.buildings.info.filter((b) => b.name && b.entrance).map((b) => ({ name: b.name!, x: b.entrance![0], z: b.entrance![1], yaw: b.entranceYaw })) ?? [],
       renderInfo: () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures }),
+      /** Settings / graphics preset (visual checks of each preset). */
+      settings: () => ({ ...settings }),
+      setPreset: (preset: Settings["preset"]) => {
+        const next = { ...settings, preset };
+        applySettings(next);
+        settingsMenu.set(next);
+      },
+      /** Footstep surface under a point. */
+      surface: (x: number, z: number) => groundAt(x, z),
+      audio: () => ({ state: audio.ctx?.state ?? null, master: audio.master?.gain.value ?? null, steps: { ...stepStats } }),
+      loading: () => ({ value: loading.progress.value(), label: loading.progress.label(), failed: loading.progress.failed() }),
       worldStats: () =>
         world
           ? {
@@ -1637,6 +1826,10 @@ export function createGame(): GameHandle {
       btnRestart?.removeEventListener("click", onRestartClick);
       btnRestart2?.removeEventListener("click", onRestartClick);
       btnSound?.removeEventListener("click", onSoundClick);
+      btnSettings?.removeEventListener("click", onSettingsClick);
+      settingsMenu.dispose();
+      loading.dispose();
+      vfx.dispose();
       window.removeEventListener("resize", onResize);
       window.removeEventListener("blur", onBlur);
       document.removeEventListener("visibilitychange", onVisibility);

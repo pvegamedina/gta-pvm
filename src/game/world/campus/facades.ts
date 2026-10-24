@@ -9,7 +9,9 @@
 // LOD: a building shows its modules only while the camera focus is within
 // FACADE_VIEW of it and its bounding sphere is in the camera frustum; farther
 // away the 4a extruded wall (window texture) behind them is all that is
-// drawn. (Per-building culling here instead of BatchedMesh's per-instance
+// drawn. The distance test has hysteresis (FACADE_HYSTERESIS, world/lod.ts)
+// so hovering at the threshold does not pop the detail on and off, and the
+// distance follows the graphics preset's view scale. (Per-building culling here instead of BatchedMesh's per-instance
 // culling: ~120 sphere tests a frame instead of tens of thousands.) Modules never cast shadows (the walls
 // do) and are not shootable (bullets hit the walls/footprint).
 
@@ -18,11 +20,14 @@ import type { MegakitAssets, MegakitSlot } from "../../assets/megakit";
 import { desaturatedTexture } from "../../assets/megakit";
 import type { BuildingLightMat } from "../environment";
 import type { FacadeLayout, ModulePlacement } from "./facadeLayout";
+import { bandVisible, getViewScale, viewScaleVersion } from "../lod";
 
 /** Facade detail draw distance (m) from the camera focus to a building's bounding circle. */
 export const FACADE_VIEW = 190;
 /** The focus must move this far (m) before visibility is re-evaluated. */
 const LOD_STEP = 8;
+/** Shown modules stay until the building is this much (m) beyond the view distance. */
+export const FACADE_HYSTERESIS = 25;
 
 type BatchKey = "brick" | "trim" | "metal" | "glassLit" | "glassDark" | "ornament";
 
@@ -144,14 +149,14 @@ export function buildFacades(buildings: readonly FacadeBuildingRef[], assets: Me
   const pos = new THREE.Vector3();
   const scl = new THREE.Vector3();
   const col = new THREE.Color();
-  const perBuilding: { cx: number; cz: number; r: number; sphere: THREE.Sphere; inst: [THREE.BatchedMesh, number][]; tris: number; shown: boolean }[] = [];
+  const perBuilding: { cx: number; cz: number; r: number; sphere: THREE.Sphere; inst: [THREE.BatchedMesh, number][]; tris: number; shown: boolean; near: boolean }[] = [];
   const frustum = new THREE.Frustum();
   const viewProj = new THREE.Matrix4();
   let instances = 0;
   let trianglesAll = 0;
   for (const b of buildings) {
     const sphere = new THREE.Sphere(new THREE.Vector3(b.cx, (b.base + b.top) / 2, b.cz), Math.hypot(b.r + 1, (b.top - b.base) / 2 + 1));
-    const entry = { cx: b.cx, cz: b.cz, r: b.r, sphere, inst: [] as [THREE.BatchedMesh, number][], tris: 0, shown: false };
+    const entry = { cx: b.cx, cz: b.cz, r: b.r, sphere, inst: [] as [THREE.BatchedMesh, number][], tris: 0, shown: false, near: false };
     for (const p of b.layout.placements) {
       const parts = assets.modules.get(p.module);
       if (!parts) continue;
@@ -178,6 +183,7 @@ export function buildFacades(buildings: readonly FacadeBuildingRef[], assets: Me
   let lastX = Infinity;
   let lastZ = Infinity;
   let lastAll = false;
+  let lastScale = -1;
   const stats: FacadeBuild["stats"] = { buildings: perBuilding.length, placements, instances, drawCalls: batches.size, trianglesAll, trianglesVisible: 0 };
 
   return {
@@ -187,10 +193,13 @@ export function buildFacades(buildings: readonly FacadeBuildingRef[], assets: Me
     update(x, z, all = false, camera) {
       const cull = !!camera && !all;
       // Without a camera only the distance matters: skip until the focus has moved a bit.
-      if (!cull && all === lastAll && Math.hypot(x - lastX, z - lastZ) < LOD_STEP) return;
+      const sv = viewScaleVersion();
+      if (!cull && all === lastAll && sv === lastScale && Math.hypot(x - lastX, z - lastZ) < LOD_STEP) return;
       lastX = x;
       lastZ = z;
       lastAll = all;
+      lastScale = sv;
+      const view = FACADE_VIEW * getViewScale();
       if (cull) {
         camera!.updateMatrixWorld();
         viewProj.multiplyMatrices(camera!.projectionMatrix, camera!.matrixWorldInverse);
@@ -198,7 +207,8 @@ export function buildFacades(buildings: readonly FacadeBuildingRef[], assets: Me
       }
       let visible = 0;
       for (const b of perBuilding) {
-        const show = all || (Math.hypot(b.cx - x, b.cz - z) - b.r < FACADE_VIEW && (!cull || frustum.intersectsSphere(b.sphere)));
+        b.near = bandVisible(b.near, Math.hypot(b.cx - x, b.cz - z) - b.r, view, FACADE_HYSTERESIS);
+        const show = all || (b.near && (!cull || frustum.intersectsSphere(b.sphere)));
         if (show) visible += b.tris;
         if (show === b.shown) continue;
         b.shown = show;

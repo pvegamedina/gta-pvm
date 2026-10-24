@@ -143,6 +143,23 @@ describe("public transport", () => {
     expect(ambulance.spawn.traffic).toBeLessThan(VEHICLE_CATALOG.police.spawn.traffic + 1e-9);
   });
 
+  it("scales the stretched vehicles' wheels up to a plausible radius (wr includes wheelScale)", () => {
+    // Real buses run ~0.5 m wheels, vans/ambulances ~0.35-0.4 m.
+    expect(bus.wr).toBeGreaterThan(0.42);
+    expect(bus.wr).toBeLessThan(0.56);
+    expect(school_bus.wr).toBeGreaterThan(0.4);
+    expect(school_bus.wr).toBeLessThan(0.56);
+    expect(ambulance.wr).toBeGreaterThan(0.32);
+    expect(ambulance.wr).toBeLessThan(0.42);
+    for (const s of [bus, school_bus, ambulance]) {
+      const ws = s.model.wheelScale ?? 1;
+      expect(ws, s.key).toBeGreaterThan(1);
+      expect(s.wr, s.key).toBeCloseTo(s.model.geometry.wheelRadius * s.model.scale * ws, 5);
+    }
+    // Cars keep their measured wheels.
+    expect(sedan.model.wheelScale ?? 1).toBe(1);
+  });
+
   it("places the doors near the front of long vehicles", () => {
     expect(bus.door.z).toBeGreaterThan(bus.L / 4);
     expect(bus.door.z).toBeLessThan(bus.L / 2);

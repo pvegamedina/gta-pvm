@@ -3,9 +3,11 @@
 // the instance buffer is compacted whenever the focus has moved a few
 // metres. Used for small street props (drawn up close only) and for tree
 // LODs (full model near, cheap proxy far), so each costs a single draw call
-// and nothing outside its band reaches the GPU.
+// and nothing outside its band reaches the GPU. Both band edges follow the
+// graphics preset's view scale (world/lod.ts).
 
 import * as THREE from "three";
+import { getViewScale, viewScaleVersion } from "./lod";
 
 export interface DistanceInstance {
   matrix: THREE.Matrix4;
@@ -24,6 +26,7 @@ export class DistanceInstances {
   private lastX = Infinity;
   private lastZ = Infinity;
   private lastAll = false;
+  private lastScale = -1;
 
   constructor(
     geometry: THREE.BufferGeometry,
@@ -70,14 +73,17 @@ export class DistanceInstances {
 
   /** Re-selects the instances in the band around (x, z); "all" draws every instance (aerial views). */
   update(x: number, z: number, all = false): void {
-    if (all === this.lastAll && Math.hypot(x - this.lastX, z - this.lastZ) < this.step) return;
+    const sv = viewScaleVersion();
+    if (all === this.lastAll && sv === this.lastScale && Math.hypot(x - this.lastX, z - this.lastZ) < this.step) return;
     this.lastX = x;
     this.lastZ = z;
     this.lastAll = all;
+    this.lastScale = sv;
+    const k = getViewScale();
     const dst = this.mesh.instanceMatrix.array as Float32Array;
     const cdst = this.mesh.instanceColor?.array as Float32Array | undefined;
-    const n2 = this.near * this.near;
-    const f2 = this.far * this.far;
+    const n2 = this.near * this.near * k * k;
+    const f2 = this.far * this.far * k * k;
     let n = 0;
     for (let i = 0; i < this.xs.length; i++) {
       const dx = this.xs[i] - x;

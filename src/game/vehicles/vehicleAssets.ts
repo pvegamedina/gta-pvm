@@ -236,6 +236,7 @@ function templateFromGltf(spec: VehicleSpec, scene: THREE.Object3D): VehicleTemp
   scene.updateMatrixWorld(true);
   const stretchZ = model.stretch ?? 1;
   const stretch = new THREE.Matrix4().makeScale(1, 1, stretchZ);
+  const wheelScale = model.wheelScale ?? 1;
   const body: PartTemplate[] = [];
   const wheels: WheelTemplate[] = [];
   const minY = model.lightBar?.minY;
@@ -294,10 +295,14 @@ function templateFromGltf(spec: VehicleSpec, scene: THREE.Object3D): VehicleTemp
       if (g.length === 0) continue;
       // Re-pivot: wheel parts are expressed relative to the wheel's own bounding-box centre.
       const centre = partsBox(g).getCenter(new THREE.Vector3());
-      const toCentre = new THREE.Matrix4().makeTranslation(-centre.x, -centre.y, -centre.z);
+      // Optional wheel scale about the wheel's own centre (stretched buses): radius
+      // only (y/z), since a rear axle is one mesh with both wheels and must keep its track.
+      const toCentre = new THREE.Matrix4().makeScale(1, wheelScale, wheelScale).multiply(new THREE.Matrix4().makeTranslation(-centre.x, -centre.y, -centre.z));
       for (const p of g) p.matrix = toCentre.clone().multiply(p.matrix);
-      // The pivot follows the stretched body (the axle moves, the wheel keeps its size).
+      // The pivot follows the stretched body (the axle moves, the stretch does not
+      // deform the wheel) and rises with a scaled wheel so the tyre still touches the ground.
       centre.z *= stretchZ;
+      centre.y += model.geometry.wheelRadius * (wheelScale - 1);
       wheels.push({ centre, front: kind !== "rear", parts: g });
     }
   }
@@ -389,7 +394,7 @@ function buildFallback(spec: VehicleSpec): VehicleTemplate {
     body.push(boxPart(W * 0.2, 0.07, 0.04, side * W * 0.32, lampY, z0 - 0.01, FALLBACK_MATS.tail, "tail"));
   }
   body.push(...reverseLamps(body.filter((p) => p.role === "tail")));
-  const r = g.wheelRadius;
+  const r = g.wheelRadius * (spec.model.wheelScale ?? 1);
   const cy = g.wheelBottom + r;
   const track = W / 2 - 0.14;
   const wheelGeo = new THREE.CylinderGeometry(r, r, 0.2, 14).rotateZ(Math.PI / 2);

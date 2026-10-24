@@ -55,6 +55,12 @@ export interface VehicleModel {
   /** Extra scale along the length applied to the body and the axle positions, not the wheels (stubby low-poly buses). */
   stretch?: number;
   /**
+   * Uniform scale of the wheels about their own centre, which is raised so
+   * they still touch the ground (stretched bodies would otherwise ride on
+   * toy-sized wheels). Included in the spec's wheel radius `wr`.
+   */
+  wheelScale?: number;
+  /**
    * Material names of the body primitives in order, with their display
    * colours, for GLBs whose materials were lost in the OBJ conversion (the
    * Public Transport Pack); "wheel" colours the wheel meshes.

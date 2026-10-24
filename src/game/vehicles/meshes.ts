@@ -3,6 +3,8 @@
 // template (vehicleAssets.ts). Geometries and materials are shared; each car
 // only owns its Object3D tree. visualVeh() animates wheels (roll + steer),
 // lamps (head / tail / brake / reverse) and the police light bar.
+// Shadows come from one merged proxy per vehicle (shadowProxy.ts) on the
+// shadow-only layer instead of from each of its ~10 parts.
 
 import * as THREE from "three";
 import { advanceWheelSpin, sirenFlash, vehicleLightState, type TailLight } from "./animation";
@@ -10,6 +12,8 @@ import { VEHICLE_CATALOG } from "./catalog";
 import { LAMP_ON, paintMaterial, vehicleTemplate, type PartRole, type PartTemplate } from "./vehicleAssets";
 import type { VehicleMode, VehicleSpec, VehicleTypeKey } from "./types";
 import type { Driver } from "./roadNetwork";
+import { shadowProxyBoxes } from "./shadowProxy";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 export type { VehicleMode } from "./types";
 
@@ -104,13 +108,35 @@ function hitboxGeometry(spec: VehicleSpec): THREE.BoxGeometry {
   return g;
 }
 
-const LAMP_ROLES = new Set<PartRole>(["head", "tail", "reverse", "barRed", "barBlue"]);
+/**
+ * Layer seen only by the sun's shadow camera (world/environment.ts enables
+ * it there; the view cameras keep the default layer 0): shadow proxies.
+ */
+export const SHADOW_ONLY_LAYER = 1;
+
+const proxyGeos = new Map<VehicleTypeKey, THREE.BufferGeometry>();
+const proxyMaterial = new THREE.MeshBasicMaterial();
+
+/** One merged low-poly caster per vehicle type (shadowProxy.ts layout). */
+function shadowProxy(spec: VehicleSpec): THREE.Mesh {
+  let g = proxyGeos.get(spec.key);
+  if (!g) {
+    const boxes = shadowProxyBoxes(spec).map((b) => new THREE.BoxGeometry(b.w, b.h, b.l).translate(0, b.y, b.z));
+    g = boxes.length === 1 ? boxes[0] : mergeGeometries(boxes)!;
+    proxyGeos.set(spec.key, g);
+  }
+  const m = new THREE.Mesh(g, proxyMaterial);
+  m.name = "vehicleShadow";
+  m.castShadow = true;
+  m.layers.set(SHADOW_ONLY_LAYER);
+  return m;
+}
 
 function partMesh(p: PartTemplate, material: THREE.Material): THREE.Mesh {
   const m = new THREE.Mesh(p.geometry, material);
   m.applyMatrix4(p.matrix);
-  // Lamps are tiny and sit on the body: their shadow pass would only cost draw calls.
-  m.castShadow = !LAMP_ROLES.has(p.role);
+  // The vehicle's shadow comes from its proxy (one draw call instead of one per part).
+  m.castShadow = false;
   return m;
 }
 
@@ -166,6 +192,7 @@ export function addVeh(scene: THREE.Scene, tk: VehicleTypeKey, color: number, x:
   hitbox.name = "vehicleHitbox";
   hitbox.visible = false;
   body.add(hitbox);
+  body.add(shadowProxy(spec));
   scene.add(root);
   root.position.set(x, 0, z);
   root.rotation.y = yaw;

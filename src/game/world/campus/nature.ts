@@ -23,6 +23,7 @@ import { createRoadIndex, nearestRoadPoint } from "../../map/queries";
 import { MODELS_URL, createGltfLoader, displayColor } from "../../assets/gltf";
 import type { CollisionGrid } from "../colliders";
 import { DistanceInstances } from "../distanceInstances";
+import { getViewScale } from "../lod";
 
 const NATURE_URL = `${MODELS_URL}/nature`;
 
@@ -213,10 +214,12 @@ interface Instance {
  * fog does not swallow anyway. Call every frame or so with the player focus.
  */
 export function updateNatureVisibility(n: NatureBuild, x: number, z: number, all = false): void {
+  // Draw distances follow the graphics preset (world/lod.ts).
+  const k = getViewScale();
   for (const m of n.group.children) {
-    const c = m.userData.cull as { x: number; z: number; r: number } | undefined;
+    const c = m.userData.cull as { x: number; z: number; view: number; radius: number } | undefined;
     if (!c) continue;
-    m.visible = all || Math.hypot(c.x - x, c.z - z) < c.r;
+    m.visible = all || Math.hypot(c.x - x, c.z - z) < c.view * k + c.radius;
   }
   for (const l of n.lods) {
     l.near.update(x, z, all);
@@ -338,7 +341,7 @@ export function buildNature(map: CampusMap, assets: NatureAssets, height: (x: nu
     mesh.name = `nature:${key}`;
     // Draw-distance culling (see updateNatureVisibility): chunk centre + view distance.
     const c = mesh.boundingSphere!.center;
-    mesh.userData.cull = { x: c.x, z: c.z, r: list[0].view + mesh.boundingSphere!.radius };
+    mesh.userData.cull = { x: c.x, z: c.z, view: list[0].view, radius: mesh.boundingSphere!.radius };
     group.add(mesh);
     triangles += (asset.geometry.attributes.position.count / 3) * list.length;
   }

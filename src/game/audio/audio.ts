@@ -12,12 +12,20 @@
 // compressor bus for punch; pistol and rifle use different recipes. Remote
 // shots are attenuated (gain + muffling low-pass) with distance. The shared
 // AudioContext + master gain stay exposed for other synthesized effects.
+//
+// Phase 5: everything above goes through an SFX bus and the ambient bed
+// (audio/ambienceSynth.ts: city hum + birds by day, crickets at night, wind),
+// footsteps and car doors are added; master / SFX / ambience volumes come
+// from the settings menu (setVolumes).
 
 import type { WeaponId } from "@shared/protocol";
 import { EngineModel, engineProfileFor, engineSoundParams, estimateThrottle, nearestVoices, type EngineSoundParams } from "./engine";
 import { EngineVoice, TireVoice } from "./engineSynth";
 import { SIREN_VOICES, nearestSirens, type SirenSource } from "./siren";
 import { SirenVoice } from "./sirenVoice";
+import { AmbienceBed, playDoor, playFootstep } from "./ambienceSynth";
+import { FOOTSTEP_PROFILES, type AmbienceMix } from "./ambience";
+import type { GroundSurface } from "../world/campus/groundMaterial";
 
 /** What the audio needs to know about a car to synthesize its engine. */
 export interface VehicleSound {
@@ -89,7 +97,18 @@ export interface AudioSystem {
   hitTick(): void;
   dryClick(): void;
   reload(): void;
+  /** Bus volumes 0..1 (settings menu); applied now or when the context is created. */
+  setVolumes(master: number, sfx: number, ambience: number): void;
+  /** One footstep on `surface` with loudness `gain` (ambience.ts footstepGain). */
+  footstep(surface: GroundSurface, gain: number): void;
+  /** Car door opening (getting in) or slamming shut (getting out). */
+  door(open: boolean): void;
+  /** Per-frame ambient bed; `active` false (paused / menus) fades it out. */
+  updateAmbience(dt: number, active: boolean, mix: AmbienceMix): void;
 }
+
+/** Master gain at full volume (the pre-settings mix had 0.5 at the default 0.8). */
+const MASTER_BASE = 0.625;
 
 /** Remote gunshots fade out completely at this distance (m). */
 export const GUNSHOT_MAX_DISTANCE = 220;
@@ -120,6 +139,18 @@ const SHOT_RECIPES: Record<WeaponId, ShotRecipe> = {
 export function createAudioSystem(): AudioSystem {
   let ctx: AudioContext | null = null;
   let master: GainNode | null = null;
+  /** Everything except the ambient bed (engines, guns, horn, sirens, footsteps, doors). */
+  let sfxBus: GainNode | null = null;
+  let ambienceBus: GainNode | null = null;
+  let bed: AmbienceBed | null = null;
+  const volumes = { master: 0.8, sfx: 1, ambience: 0.7 };
+  function applyVolumes(): void {
+    if (!ctx || !master || !sfxBus || !ambienceBus) return;
+    const t = ctx.currentTime;
+    master.gain.setTargetAtTime(MASTER_BASE * volumes.master, t, 0.05);
+    sfxBus.gain.setTargetAtTime(volumes.sfx, t, 0.05);
+    ambienceBus.gain.setTargetAtTime(volumes.ambience, t, 0.05);
+  }
   /** Engine bus (gentle compression so several engines don't clip). */
   let engineBus: GainNode | null = null;
   let localVoice: EngineVoice | null = null;
@@ -194,8 +225,14 @@ export function createAudioSystem(): AudioSystem {
         const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
         ctx = new AC();
         master = ctx.createGain();
-        master.gain.value = 0.5;
+        master.gain.value = MASTER_BASE * volumes.master;
         master.connect(ctx.destination);
+        sfxBus = ctx.createGain();
+        sfxBus.gain.value = volumes.sfx;
+        sfxBus.connect(master);
+        ambienceBus = ctx.createGain();
+        ambienceBus.gain.value = volumes.ambience;
+        ambienceBus.connect(master);
         // Gunshot bus (compressor) + slap-back echo send.
         const comp = ctx.createDynamicsCompressor();
         comp.threshold.value = -14;
@@ -203,7 +240,7 @@ export function createAudioSystem(): AudioSystem {
         comp.ratio.value = 6;
         comp.attack.value = 0.002;
         comp.release.value = 0.12;
-        comp.connect(master);
+        comp.connect(sfxBus);
         gunBus = ctx.createGain();
         gunBus.connect(comp);
         echoIn = ctx.createGain();
@@ -223,14 +260,15 @@ export function createAudioSystem(): AudioSystem {
         const engComp = ctx.createDynamicsCompressor();
         engComp.threshold.value = -18;
         engComp.ratio.value = 4;
-        engComp.connect(master);
+        engComp.connect(sfxBus);
         engineBus = ctx.createGain();
         engineBus.gain.value = 0.9;
         engineBus.connect(engComp);
         localVoice = new EngineVoice(ctx, engineBus, noise);
         tireVoice = new TireVoice(ctx, engineBus, noise);
         for (let i = 0; i < REMOTE_ENGINE_VOICES; i++) remoteVoices.push({ voice: new EngineVoice(ctx, engineBus, noise), id: null, model: null, prevSpeed: 0 });
-        for (let i = 0; i < SIREN_VOICES; i++) sirenVoices.push(new SirenVoice(ctx, master));
+        for (let i = 0; i < SIREN_VOICES; i++) sirenVoices.push(new SirenVoice(ctx, sfxBus));
+        bed = new AmbienceBed(ctx, ambienceBus, noise);
         sys.ctx = ctx;
         sys.master = master;
       } catch {
@@ -238,7 +276,7 @@ export function createAudioSystem(): AudioSystem {
       }
     },
     horn() {
-      if (!ctx || !master || !sys.soundOn) return;
+      if (!ctx || !sfxBus || !sys.soundOn) return;
       [400, 500].forEach((f) => {
         const o = ctx!.createOscillator();
         const g = ctx!.createGain();
@@ -247,13 +285,13 @@ export function createAudioSystem(): AudioSystem {
         g.gain.value = 0.08;
         g.gain.setTargetAtTime(0, ctx!.currentTime + 0.35, 0.05);
         o.connect(g);
-        g.connect(master!);
+        g.connect(sfxBus!);
         o.start();
         o.stop(ctx!.currentTime + 0.6);
       });
     },
     thump(strength: number) {
-      if (!ctx || !master || !sys.soundOn) return;
+      if (!ctx || !sfxBus || !sys.soundOn) return;
       const o = ctx.createOscillator();
       const g = ctx.createGain();
       o.type = "triangle";
@@ -261,7 +299,7 @@ export function createAudioSystem(): AudioSystem {
       g.gain.value = Math.min(0.5, strength / 40);
       g.gain.setTargetAtTime(0, ctx.currentTime + 0.05, 0.08);
       o.connect(g);
-      g.connect(master);
+      g.connect(sfxBus);
       o.start();
       o.stop(ctx.currentTime + 0.4);
     },
@@ -298,7 +336,7 @@ export function createAudioSystem(): AudioSystem {
       noiseLayer(gunBus, t + 0.025, "bandpass", 2600, 5, 0.04, 0.018);
     },
     hitTick() {
-      if (!ctx || !master || !sys.soundOn) return;
+      if (!ctx || !sfxBus || !sys.soundOn) return;
       const t = ctx.currentTime + 0.02;
       const o = ctx.createOscillator();
       o.type = "square";
@@ -308,7 +346,7 @@ export function createAudioSystem(): AudioSystem {
       g.gain.setValueAtTime(0.05, t);
       g.gain.exponentialRampToValueAtTime(0.0008, t + 0.05);
       o.connect(g);
-      g.connect(master);
+      g.connect(sfxBus);
       o.start(t);
       o.stop(t + 0.07);
     },
@@ -321,6 +359,24 @@ export function createAudioSystem(): AudioSystem {
       const t = ctx.currentTime;
       noiseLayer(gunBus, t, "bandpass", 900, 2, 0.14, 0.07);
       noiseLayer(gunBus, t + 0.12, "bandpass", 2400, 4, 0.1, 0.03);
+    },
+    setVolumes(m, sfx, amb) {
+      volumes.master = Math.min(1, Math.max(0, m));
+      volumes.sfx = Math.min(1, Math.max(0, sfx));
+      volumes.ambience = Math.min(1, Math.max(0, amb));
+      applyVolumes();
+    },
+    footstep(surface, gain) {
+      if (!ctx || !sfxBus || !noise || !sys.soundOn) return;
+      playFootstep(ctx, sfxBus, noise, FOOTSTEP_PROFILES[surface], gain);
+    },
+    door(open) {
+      if (!ctx || !sfxBus || !noise || !sys.soundOn) return;
+      playDoor(ctx, sfxBus, noise, open);
+    },
+    updateAmbience(dt, active, mix) {
+      if (!bed) return;
+      bed.update(dt, mix, active && sys.soundOn ? 1 : 0);
     },
     updateVehicles(dt, active, local, remotes) {
       if (!ctx || !localVoice || !tireVoice) return;
@@ -402,11 +458,15 @@ export function createAudioSystem(): AudioSystem {
       remoteVoices.length = 0;
       for (const v of sirenVoices) v.dispose();
       sirenVoices.length = 0;
+      bed?.dispose();
+      bed = null;
       localVoice = null;
       tireVoice = null;
       localModel = null;
       if (ctx) void ctx.close().catch(() => {});
       ctx = null;
+      sfxBus = null;
+      ambienceBus = null;
       sys.ctx = null;
       sys.master = null;
     },

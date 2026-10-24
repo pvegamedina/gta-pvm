@@ -174,13 +174,15 @@ const ENTRIES: Record<VehicleTypeKey, CatalogEntry> = {
     siren: true,
   },
   // Quaternius "Public Transport Pack" (CC0). The low-poly bodies are short for
-  // their width, so they are stretched along their length (wheels keep their size).
+  // their width, so they are stretched along their length; their wheels are
+  // scaled up separately (wheelScale) to a real bus / van wheel radius.
   bus: {
     name: "Autobús",
     model: {
       file: "/models/vehicles/bus.glb",
       scale: 1.5,
       stretch: 1.85,
+      wheelScale: 2,
       orient: { rotateY: Math.PI / 2, offset: [0, 0, 1.765] },
       geometry: geometry({ min: [-0.872, -1.001, -2.043], max: [0.872, 0.555, 2.043] }, 1.425, -1.423, 0.165, -1.122),
       paint: paint(),
@@ -209,6 +211,7 @@ const ENTRIES: Record<VehicleTypeKey, CatalogEntry> = {
       file: "/models/vehicles/school_bus.glb",
       scale: 1.3,
       stretch: 1.75,
+      wheelScale: 2,
       orient: { rotateY: Math.PI / 2, offset: [0, 0, 1.504] },
       geometry: geometry({ min: [-0.939, -1.001, -2.304], max: [0.939, 1.071, 2.304] }, 1.878, -1.684, 0.165, -1.122),
       paint: paint(),
@@ -237,6 +240,7 @@ const ENTRIES: Record<VehicleTypeKey, CatalogEntry> = {
       file: "/models/vehicles/ambulance.glb",
       scale: 0.8,
       stretch: 1.3,
+      wheelScale: 1.6,
       orient: { rotateY: 0, offset: [0, 0, -0.768] },
       geometry: geometry({ min: [-1.419, -0.147, -2.858], max: [1.419, 2.503, 2.858] }, 1.923, -1.747, 0.282, -0.411),
       paint: paint(),
@@ -293,7 +297,7 @@ function buildSpec(key: VehicleTypeKey, e: CatalogEntry): VehicleSpec {
     W,
     H: (g.body.max[1] - g.wheelBottom) * s,
     zc,
-    wr: g.wheelRadius * s,
+    wr: g.wheelRadius * s * (e.model.wheelScale ?? 1),
     wb: (g.frontAxleZ - g.rearAxleZ) * s * k,
     mass: e.mass,
     max: e.max,

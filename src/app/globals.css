@@ -560,3 +560,121 @@ input.nameInput {
   letter-spacing: 0.06em;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
 }
+
+/* ===== Loading bar (start overlay) ===== */
+.loadBox {
+  width: min(420px, 90vw);
+  margin: 4px 0 14px;
+  text-align: left;
+}
+.loadBox.hidden {
+  display: none;
+}
+.loadHead {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+  margin-bottom: 6px;
+}
+.loadBar {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.loadBar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #ffd45e, #ff7a45);
+  transition: width 0.25s ease-out;
+}
+.loadBox.error .loadBar i {
+  background: #ff5050;
+}
+
+/* ===== Settings panel ===== */
+.settingsGrid {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 6px 0 18px;
+}
+.settingsCard {
+  min-width: 300px;
+}
+.setRow {
+  display: grid;
+  grid-template-columns: 1fr 130px 52px;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+}
+.setRow output {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+.setRow input[type="range"] {
+  width: 100%;
+  accent-color: #ff8a3c;
+}
+.setRow.check {
+  grid-template-columns: auto 1fr;
+  cursor: pointer;
+}
+.setRow.check input {
+  width: 16px;
+  height: 16px;
+  accent-color: #ff8a3c;
+}
+.segmented {
+  grid-column: 2 / 4;
+  display: flex;
+  gap: 4px;
+}
+.segmented button {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+.segmented button.active {
+  background: linear-gradient(90deg, #ff9a3c, #ff5e3a);
+  border-color: transparent;
+  font-weight: 700;
+}
+.setHint {
+  font-size: 12px;
+  opacity: 0.6;
+  margin: 2px 0 6px;
+}
+
+/* ===== F3 performance overlay ===== */
+#perfHud {
+  position: fixed;
+  top: 64px;
+  left: 14px;
+  z-index: 15;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  pointer-events: none;
+}
+#perfHud.hidden {
+  display: none;
+}
+#perfText {
+  font: 12px/1.45 ui-monospace, Consolas, monospace;
+  white-space: pre;
+  margin-bottom: 6px;
+}
+#perfGraph {
+  display: block;
+  width: 240px;
+  height: 48px;
+}

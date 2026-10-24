@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import type { GameHandle } from "@/game/game";
+import { PRESET_LABELS, PRESET_ORDER } from "@/game/settings/graphicsPresets";
 
 export default function Game() {
   const bootedRef = useRef(false);
@@ -27,6 +28,12 @@ export default function Game() {
   return (
     <>
       <canvas id="c" />
+
+      {/* F3 performance overlay (game/hud/perfHud.ts) */}
+      <div id="perfHud" className="hidden" aria-hidden="true">
+        <pre id="perfText" />
+        <canvas id="perfGraph" width={240} height={48} />
+      </div>
 
       <div id="hud" className="hidden">
         <div id="modeBox">
@@ -114,6 +121,16 @@ export default function Game() {
             ›
           </button>
         </div>
+        {/* Boot progress (game/loading/loadingScreen.ts); hidden once everything is loaded. */}
+        <div id="loadBox" className="loadBox" role="progressbar" aria-label="Progreso de carga">
+          <div className="loadHead">
+            <span id="loadLabel">Cargando…</span>
+            <span id="loadPct">0%</span>
+          </div>
+          <div className="loadBar">
+            <i id="loadFill" />
+          </div>
+        </div>
         <button id="btnPlay" className="big">
           Jugar
         </button>
@@ -165,6 +182,8 @@ export default function Game() {
             <br />
             <kbd>N</kbd> avanzar 6 horas (día/noche)
             <br />
+            <kbd>F3</kbd> rendimiento · Ajustes en la pausa
+            <br />
             Botón «Reiniciar» en pantalla
           </div>
         </div>
@@ -199,6 +218,7 @@ export default function Game() {
         <div className="btnrow">
           <button id="btnRestart2">↺ Reiniciar partida</button>
           <button id="btnSound">🔊 Sonido: sí</button>
+          <button id="btnSettings">⚙ Ajustes</button>
         </div>
         <div className="ctrls">
           <div className="card">
@@ -216,6 +236,64 @@ export default function Game() {
             <br />
             Mantén <kbd>H</kbd> sirena (policía)
           </div>
+        </div>
+      </div>
+
+      {/* Settings panel (game/settings/settingsMenu.ts), opened from the pause menu. */}
+      <div id="settings" className="overlay hidden">
+        <h2>Ajustes</h2>
+        <div className="settingsGrid">
+          <div className="card settingsCard">
+            <b>Controles</b>
+            <label className="setRow">
+              <span>Sensibilidad del ratón</span>
+              <input id="setSens" type="range" min={0.25} max={3} step={0.05} defaultValue={1} />
+              <output id="setSensVal">1.00×</output>
+            </label>
+          </div>
+          <div className="card settingsCard">
+            <b>Sonido</b>
+            <label className="setRow">
+              <span>Volumen general</span>
+              <input id="setMaster" type="range" min={0} max={100} step={1} defaultValue={80} />
+              <output id="setMasterVal">80%</output>
+            </label>
+            <label className="setRow">
+              <span>Efectos</span>
+              <input id="setSfx" type="range" min={0} max={100} step={1} defaultValue={100} />
+              <output id="setSfxVal">100%</output>
+            </label>
+            <label className="setRow">
+              <span>Ambiente</span>
+              <input id="setAmbience" type="range" min={0} max={100} step={1} defaultValue={70} />
+              <output id="setAmbienceVal">70%</output>
+            </label>
+          </div>
+          <div className="card settingsCard">
+            <b>Gráficos</b>
+            <div className="setRow">
+              <span>Calidad</span>
+              <div id="setPreset" className="segmented" role="group" aria-label="Calidad gráfica">
+                {PRESET_ORDER.map((p) => (
+                  <button key={p} type="button" data-preset={p}>
+                    {PRESET_LABELS[p]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <p className="setHint">Sombras, resolución y distancia de dibujado. Se aplica al instante.</p>
+            <label className="setRow check">
+              <input id="setPerf" type="checkbox" />
+              <span>
+                Mostrar rendimiento (<kbd>F3</kbd>)
+              </span>
+            </label>
+          </div>
+        </div>
+        <div className="btnrow">
+          <button id="btnSettingsBack" className="big">
+            Volver
+          </button>
         </div>
       </div>
     </>
