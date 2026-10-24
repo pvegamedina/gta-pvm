@@ -1,4 +1,8 @@
 3D models by Quaternius (https://quaternius.com) — CC0 1.0 Universal (public domain).
 - characters/*.glb: "Ultimate Modular Men Pack" (individual characters, with animations)
 - weapons/pistol.glb (Pistol_5), weapons/rifle.glb (AssaultRifle2_1): "Ultimate Gun Pack"
+- vehicles/*.glb: "Realistic Car Pack" (Cop, Taxi, SUV, NormalCar1/2, SportsCar1/2)
+- nature/*.glb: "Ultimate Nature Pack" (palms, pines, common trees, bushes, plants, rocks, grass, flowers)
+- buildings/megakit.glb (+ megakit.index.json with per-module bounds): "Downtown City MegaKit [Standard]",
+  153 modules merged into one file, base colour textures only (WebP 1024 px)
 Converted with obj2gltf / gltf-transform (meshopt compression, requires MeshoptDecoder).
