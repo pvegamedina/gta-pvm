@@ -2,8 +2,9 @@
 // static colliders and other vehicles, and the suspension-ish pitch/roll feel.
 
 import { clamp } from "../core/math";
-import { LIMIT } from "../core/constants";
-import { circleVsCollider, groundY, type CollisionGrid, type HitInfo } from "../world/colliders";
+import { circleVsCollider, type CollisionGrid, type HitInfo } from "../world/colliders";
+import { clampToWorld } from "../world/ground";
+import { settleOnGround } from "./traffic";
 import type { Vehicle } from "./meshes";
 import { pushShare } from "./catalog";
 
@@ -74,13 +75,8 @@ export function collideCar(v: Vehicle, grid: CollisionGrid, vehicles: Vehicle[])
       }
     }
   }
-  if (Math.abs(v.x) > LIMIT) {
-    v.x = Math.sign(v.x) * LIMIT;
+  if (clampToWorld(v)) {
     v.vx = 0;
-    impact = Math.max(impact, 3);
-  }
-  if (Math.abs(v.z) > LIMIT) {
-    v.z = Math.sign(v.z) * LIMIT;
     v.vz = 0;
     impact = Math.max(impact, 3);
   }
@@ -141,7 +137,8 @@ export function updatePlayerCar(v: Vehicle, dt: number, input: CarInput, grid: C
   const impact = collideCar(v, grid, vehicles);
   vF = v.vx * fx + v.vz * fz;
   v.speed = vF;
-  v.y += (groundY(v.x, v.z) - v.y) * Math.min(1, dt * 14);
+  // Ride height and body tilt follow the ground under the four wheels.
+  settleOnGround(v, dt);
   const acc = (vF - v.prevF) / dt;
   v.prevF = vF;
   v.pitch += (clamp(-acc * 0.004, -0.05, 0.05) - v.pitch) * Math.min(1, dt * 6);

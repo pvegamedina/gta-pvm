@@ -11,12 +11,13 @@ import {
   type PlayerMotion,
   type ServerMessage,
 } from "../shared/protocol";
-import { GameRoom } from "./room";
+import { GameRoom, type RoomDeps } from "./room";
+import { WORLD_LIMIT } from "./validation";
 
 interface Sent { to: string; msg: ServerMessage }
 interface Broadcast { msg: ServerMessage; except?: string }
 
-function setup() {
+function setup(extra: Partial<RoomDeps> = {}) {
   let time = 1000;
   const sent: Sent[] = [];
   const broadcasts: Broadcast[] = [];
@@ -32,6 +33,7 @@ function setup() {
       disconnected.push(id);
       room.leave(id); // mirrors the real socket "close" handler in server/index.ts
     },
+    ...extra,
   });
   const advance = (ms: number) => {
     time += ms;
@@ -169,12 +171,12 @@ describe("GameRoom", () => {
     const states = c.bcast("states")[0].msg as Extract<ServerMessage, { t: "states" }>;
     expect(states.players[0].motion.p[0]).toBe(0);
 
-    c.room.handle("a", { t: "state", motion: motion(900, -900) });
+    c.room.handle("a", { t: "state", motion: motion(5000, -5000) });
     c.broadcasts.length = 0;
     c.room.tick();
     const s2 = c.bcast("states")[0].msg as Extract<ServerMessage, { t: "states" }>;
-    expect(s2.players[0].motion.p[0]).toBe(400);
-    expect(s2.players[0].motion.p[2]).toBe(-400);
+    expect(s2.players[0].motion.p[0]).toBe(WORLD_LIMIT);
+    expect(s2.players[0].motion.p[2]).toBe(-WORLD_LIMIT);
   });
 
   it("applies weapon damage on a valid hit and broadcasts shot with hit=true", () => {
@@ -264,6 +266,29 @@ describe("GameRoom", () => {
     const scores = c.bcast("scores").at(-1)!.msg as Extract<ServerMessage, { t: "scores" }>;
     expect(scores.players.find((p) => p.id === "a")).toMatchObject({ kills: 1, deaths: 0 });
     expect(scores.players.find((p) => p.id === "b")).toMatchObject({ kills: 0, deaths: 1 });
+  });
+
+  it("spawns and respawns players at the map's spawn points when given", () => {
+    const spawns = [{ x: 91.5, z: 105.4, yaw: 0.647 }, { x: -25.2, z: 212.3, yaw: 0.633 }];
+    const m = setup({ spawns, random: () => 0.75 });
+    joinPlayer(m as Ctx, "a");
+    const welcome = m.sentTo("a", "welcome")[0] as Extract<ServerMessage, { t: "welcome" }>;
+    expect(welcome.spawn).toEqual(spawns[1]);
+    joinPlayer(m as Ctx, "b");
+    m.room.handle("b", { t: "selfDamage", amount: MAX_HEALTH, cause: "fall" });
+    m.advance(RESPAWN_DELAY_MS);
+    const r = m.bcast("respawned")[0].msg as Extract<ServerMessage, { t: "respawned" }>;
+    expect(spawns).toContainEqual(r.spawn);
+  });
+
+  it("accepts positions anywhere on the 1.2 km campus", () => {
+    joinPlayer(c, "a");
+    c.room.handle("a", { t: "state", motion: motion(575, 640) });
+    c.broadcasts.length = 0;
+    c.room.tick();
+    const s = c.bcast("states")[0].msg as Extract<ServerMessage, { t: "states" }>;
+    expect(s.players[0].motion.p[0]).toBe(575);
+    expect(s.players[0].motion.p[2]).toBe(640);
   });
 
   it("respawns after the delay with full health", () => {

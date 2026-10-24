@@ -9,32 +9,21 @@ import { advanceWheelSpin, sirenFlash, vehicleLightState, type TailLight } from 
 import { VEHICLE_CATALOG } from "./catalog";
 import { LAMP_ON, paintMaterial, vehicleTemplate, type PartRole, type PartTemplate } from "./vehicleAssets";
 import type { VehicleMode, VehicleSpec, VehicleTypeKey } from "./types";
+import type { Driver } from "./roadNetwork";
 
 export type { VehicleMode } from "./types";
 
+/** Traffic AI state (vehicles/traffic.ts): where the car is on the road network and how it drives. */
 export interface TrafficAiState {
-  dx: number;
-  dz: number;
-  ix: number;
-  iz: number;
-  turn: TurnGeom | null;
-  dec: "S" | "L" | "R" | null;
-  cruise: number;
+  driver: Driver;
+  /** Personal speed factor (cautious < 1 < sporty). */
+  temper: number;
+  /** Acceleration (m/s²). */
   acc: number;
+  /** Seconds spent blocked behind something while it should be moving. */
   stuck: number;
+  /** Seconds left ignoring other AI cars after being stuck (unjams gridlocks). */
   ghost: number;
-}
-
-export interface TurnGeom {
-  nx: number;
-  nz: number;
-  P: { x: number; z: number };
-  S: { x: number; z: number };
-  T: { x: number; z: number };
-  r: number;
-  nix: number;
-  niz: number;
-  u: number;
 }
 
 interface Lamp {
@@ -90,6 +79,9 @@ export interface Vehicle {
   ai: TrafficAiState | null;
   pitch: number;
   roll: number;
+  /** Body pitch/roll from the ground slope under the wheels (added to pitch/roll). */
+  tPitch: number;
+  tRoll: number;
   prevF: number;
   /** Body tint (display sRGB); also sent over the network. Ignored by livery types. */
   color: number;
@@ -201,6 +193,8 @@ export function addVeh(scene: THREE.Scene, tk: VehicleTypeKey, color: number, x:
     ai: null,
     pitch: 0,
     roll: 0,
+    tPitch: 0,
+    tRoll: 0,
     prevF: 0,
     color,
   };
@@ -214,8 +208,8 @@ function setLamps(lamps: Lamp[], on: THREE.Material | null): void {
 export function visualVeh(v: Vehicle, dt: number, nightF: number): void {
   v.root.position.set(v.x, v.y, v.z);
   v.root.rotation.y = v.yaw;
-  v.body.rotation.x = v.pitch;
-  v.body.rotation.z = v.roll;
+  v.body.rotation.x = v.pitch + v.tPitch;
+  v.body.rotation.z = v.roll + v.tRoll;
   const vis = v.visual;
   v.spin = advanceWheelSpin(v.spin, v.speed, dt, v.spec.wr);
   for (const s of vis.spin) s.rotation.x = v.spin;

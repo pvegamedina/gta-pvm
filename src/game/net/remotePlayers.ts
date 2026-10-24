@@ -12,6 +12,10 @@ import { parseCharacterId, resolveCharacter } from "../characters/characterChoic
 import type { CharacterRig, RigFactory } from "../characters/characterRig";
 import { InterpolationBuffer } from "./interpolation";
 import { ShootableRegistry } from "../combat/shootables";
+import { terrainPose } from "../vehicles/terrainPose";
+import { groundY } from "../world/ground";
+
+const _pose = { y: 0, pitch: 0, roll: 0 };
 
 export interface RemotePlayer {
   id: string;
@@ -295,6 +299,10 @@ export class RemotePlayerManager {
         rp.car.y = motion.p[1];
         rp.car.z = motion.p[2];
         rp.car.yaw = motion.car.yaw;
+        // Body tilt from the local terrain (the network only carries position + yaw).
+        terrainPose((x, z) => groundY(x, z, rp.car!.y + 1), rp.car.x, rp.car.z, rp.car.yaw, rp.car.spec.wb / 2, rp.car.spec.W * 0.42, _pose);
+        rp.car.tPitch = _pose.pitch;
+        rp.car.tRoll = _pose.roll;
         rp.car.speed = motion.car.speed;
         rp.car.steerVis = motion.car.steer;
         // Optional flags (absent from old clients: no siren, no brake lights).

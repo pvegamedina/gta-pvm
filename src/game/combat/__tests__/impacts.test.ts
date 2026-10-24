@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DecalRing, decalFade, rayGroundHit } from "../impacts";
+import { DecalRing, decalFade, rayTerrainHit } from "../impacts";
 
 describe("DecalRing", () => {
   it("hands out free slots first", () => {
@@ -35,22 +35,38 @@ describe("decalFade", () => {
   });
 });
 
-describe("rayGroundHit", () => {
-  // Roads (y=0) for |x| < 9, raised blocks (y=0.25) elsewhere.
-  const groundY = (x: number) => (Math.abs(x) < 9 ? 0 : 0.25);
 
-  it("hits a raised block at y=0.25", () => {
-    const d = rayGroundHit({ x: 20, y: 1.75, z: 0 }, { x: 0, y: -1, z: 0 }, 50, groundY);
-    expect(d).toBeCloseTo(1.5, 6);
+describe("rayTerrainHit", () => {
+  it("hits flat ground at the plane height", () => {
+    const d = rayTerrainHit({ x: 0, y: 11.75, z: 0 }, { x: 0, y: -1, z: 0 }, 50, () => 10);
+    expect(d).toBeCloseTo(1.75, 3);
   });
 
-  it("hits the road at y=0 when the block plane is above the road there", () => {
-    const d = rayGroundHit({ x: 0, y: 2, z: 0 }, { x: 0, y: -1, z: 0 }, 50, groundY);
-    expect(d).toBeCloseTo(2, 6);
+  it("finds the hit point on a slope to within a few centimetres", () => {
+    const h = (x: number) => 0.3 * x;
+    const dir = { x: Math.SQRT1_2, y: -Math.SQRT1_2, z: 0 };
+    const d = rayTerrainHit({ x: 0, y: 20, z: 0 }, dir, 200, h)!;
+    const px = dir.x * d;
+    const py = 20 + dir.y * d;
+    expect(Math.abs(py - h(px))).toBeLessThan(0.03);
   });
 
-  it("misses rays going up or beyond range", () => {
-    expect(rayGroundHit({ x: 0, y: 2, z: 0 }, { x: 0, y: 1, z: 0 }, 50, groundY)).toBeNull();
-    expect(rayGroundHit({ x: 0, y: 200, z: 0 }, { x: 0, y: -1, z: 0 }, 50, groundY)).toBeNull();
+  it("stops at a hill between the shooter and a far target (shooting uphill)", () => {
+    // A 6 m bump centred at x = 30.
+    const h = (x: number) => 6 * Math.exp(-((x - 30) ** 2) / 50);
+    const dir = { x: 1, y: 0, z: 0 };
+    const d = rayTerrainHit({ x: 0, y: 3, z: 0 }, dir, 100, h);
+    expect(d).not.toBeNull();
+    expect(d!).toBeGreaterThan(20);
+    expect(d!).toBeLessThan(30);
+  });
+
+  it("returns null when the ray stays above the ground within range", () => {
+    expect(rayTerrainHit({ x: 0, y: 2, z: 0 }, { x: 0, y: 1, z: 0 }, 50, () => 0)).toBeNull();
+    expect(rayTerrainHit({ x: 0, y: 200, z: 0 }, { x: 0, y: -1, z: 0 }, 50, () => 0)).toBeNull();
+  });
+
+  it("ignores ground behind or at the origin when starting below it (inside a hill)", () => {
+    expect(rayTerrainHit({ x: 0, y: -1, z: 0 }, { x: 1, y: 0, z: 0 }, 50, () => 0)).toBe(0);
   });
 });

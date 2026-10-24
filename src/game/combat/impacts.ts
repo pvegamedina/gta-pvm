@@ -1,7 +1,7 @@
 // Pure bookkeeping for bullet impacts: a fixed-size decal ring that recycles
-// the oldest bullet hole, the age-based decal fade, and a ray/ground test
-// (the ground isn't a shootable mesh, so shots at the floor would otherwise
-// "land" far underground). No THREE/DOM.
+// the oldest bullet hole, the age-based decal fade, and a ray/terrain test
+// (the terrain is not a shootable mesh, so shots at the floor or into a hill
+// would otherwise "land" far underground). No THREE/DOM.
 
 export class DecalRing {
   private born: number[] = [];
@@ -47,19 +47,33 @@ interface V3 {
   z: number;
 }
 
-/** Height of the raised city blocks (world/colliders.ts groundY returns 0 or this). */
-const BLOCK_TOP = 0.25;
+/** March step (m) of the terrain ray test: well under a 4 m terrain cell. */
+const RAY_STEP = 1;
 
 /**
- * Distance along `dir` (unit) from `origin` to the ground, or null when the
- * ray doesn't reach it within `maxDist`. The ground is two planes: roads at
- * y=0 and raised blocks at y=0.25, chosen per point with `groundY(x, z)`.
+ * Distance along `dir` (unit) from `origin` to the terrain `height(x, z)`, or
+ * null when the ray stays above it within `maxDist`. Marches in RAY_STEP
+ * increments (so hills between the shooter and the target stop the round)
+ * and refines the crossing by bisection. Returns 0 when the origin already
+ * is underground.
  */
-export function rayGroundHit(origin: V3, dir: V3, maxDist: number, groundY: (x: number, z: number) => number): number | null {
-  if (dir.y >= -1e-6) return null;
-  const tBlock = (BLOCK_TOP - origin.y) / dir.y;
-  if (tBlock > 0 && tBlock <= maxDist && groundY(origin.x + dir.x * tBlock, origin.z + dir.z * tBlock) >= BLOCK_TOP) return tBlock;
-  const tRoad = -origin.y / dir.y;
-  if (tRoad > 0 && tRoad <= maxDist) return tRoad;
-  return null;
+export function rayTerrainHit(origin: V3, dir: V3, maxDist: number, height: (x: number, z: number) => number): number | null {
+  const above = (t: number) => origin.y + dir.y * t - height(origin.x + dir.x * t, origin.z + dir.z * t);
+  if (above(0) <= 0) return 0;
+  let prevT = 0;
+  for (let t = RAY_STEP; ; t += RAY_STEP) {
+    const tt = Math.min(t, maxDist);
+    if (above(tt) <= 0) {
+      let lo = prevT;
+      let hi = tt;
+      for (let k = 0; k < 18; k++) {
+        const mid = (lo + hi) / 2;
+        if (above(mid) > 0) lo = mid;
+        else hi = mid;
+      }
+      return (lo + hi) / 2;
+    }
+    if (tt >= maxDist) return null;
+    prevT = tt;
+  }
 }

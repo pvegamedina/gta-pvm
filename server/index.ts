@@ -9,6 +9,7 @@ import {
   type ServerMessage,
 } from "../shared/protocol";
 import { GameRoom } from "./room";
+import { loadMapSpawns } from "./mapSpawns";
 import { isRecord } from "./validation";
 
 // PORT is the convention used by hosting platforms (Render, Railway, Heroku…)
@@ -26,7 +27,12 @@ function sendTo(socket: WebSocket | undefined, msg: ServerMessage): void {
   if (socket?.readyState === WebSocket.OPEN) socket.send(encode(msg));
 }
 
+// Spawn points come from the same campus map file the client renders.
+const spawns = loadMapSpawns();
+console.log(`[map] ${spawns.length} spawn points`);
+
 const room = new GameRoom({
+  spawns,
   now: Date.now,
   random: Math.random,
   schedule: (fn, ms) => { setTimeout(fn, ms); },

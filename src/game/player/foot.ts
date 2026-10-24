@@ -5,9 +5,9 @@
 // remove the velocity component pushing into whatever was hit, so the
 // character slides along walls instead of "running in place" against them.
 
-import { angLerp, clamp } from "../core/math";
-import { LIMIT } from "../core/constants";
-import { circleVsCollider, groundY, type CollisionGrid, type HitInfo } from "../world/colliders";
+import { angLerp } from "../core/math";
+import { circleVsCollider, type CollisionGrid, type HitInfo } from "../world/colliders";
+import { clampToWorld, groundY } from "../world/ground";
 import type { Vehicle } from "../vehicles/meshes";
 import type { PlayerState } from "./playerState";
 import { stepFootVelocity, type FootMoveInput } from "./footMotion";
@@ -53,8 +53,7 @@ export function resolveFoot(p: { x: number; z: number }, grid: CollisionGrid, ve
     }
     if (!moved) break;
   }
-  p.x = clamp(p.x, -LIMIT, LIMIT);
-  p.z = clamp(p.z, -LIMIT, LIMIT);
+  clampToWorld(p);
 }
 
 const _move: FootMoveInput = { dirX: 0, dirZ: 0, run: false, ground: true };
@@ -97,7 +96,7 @@ export function updateFoot(p: PlayerState, dt: number, input: FootInput, camYaw:
       p.vz -= vn * nz;
     }
   }
-  const gy = groundY(p.x, p.z);
+  const gy = groundY(p.x, p.z, p.y + 0.6);
   if (input.jump && p.ground) {
     p.vy = 6;
     p.ground = false;

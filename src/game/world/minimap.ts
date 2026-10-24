@@ -1,10 +1,14 @@
-// Minimap: a pre-rendered top-down city texture, rotated/panned to follow the
+// Minimap: a pre-rendered top-down painting of the campus map (landuse,
+// roads by class, buildings, campus outline), rotated/panned to follow the
 // camera each frame. Also draws AI/parked vehicles and remote players as dots.
 
-import { G, WORLD, HALF, ROAD, BLOCK, SPECIAL, rc, bc } from "../core/constants";
+import type { CampusMap } from "../map/loader";
+import { MINIMAP_PALETTE, paintMap } from "./campus/mapPainter";
 
-const MAPR = 270;
-const MAPS = 2;
+/** Pixels per metre of the pre-rendered minimap texture. */
+const MAP_PX_PER_M = 1.25;
+/** Minimap zoom (screen px per metre). */
+const ZOOM = 0.8;
 
 export interface MinimapDot {
   x: number;
@@ -13,34 +17,26 @@ export interface MinimapDot {
   r: number;
 }
 
-export function buildMapTexture(): HTMLCanvasElement {
-  const mapC = document.createElement("canvas");
-  mapC.width = mapC.height = MAPR * 2 * MAPS;
-  const x = mapC.getContext("2d")!;
-  const w = (v: number) => (v + MAPR) * MAPS;
-  x.fillStyle = "#3c6a35";
-  x.fillRect(0, 0, mapC.width, mapC.height);
-  x.fillStyle = "#2f3238";
-  for (let i = 0; i <= G; i++) {
-    x.fillRect(w(-WORLD), w(rc(i) - HALF), WORLD * 2 * MAPS, ROAD * MAPS);
-    x.fillRect(w(rc(i) - HALF), w(-WORLD), ROAD * MAPS, WORLD * 2 * MAPS);
-  }
-  for (let i = 0; i < G; i++) {
-    for (let j = 0; j < G; j++) {
-      const sp = SPECIAL[i + "," + j];
-      x.fillStyle = "#bdb8a8";
-      x.fillRect(w(bc(i) - 30), w(bc(j) - 30), BLOCK * MAPS, BLOCK * MAPS);
-      x.fillStyle = sp === "park" ? "#4f8a3c" : sp === "plaza" ? "#e0d8c4" : sp === "lot" ? "#3a3c40" : "#8d8f96";
-      const m = sp ? 27 : 25;
-      x.fillRect(w(bc(i) - m), w(bc(j) - m), m * 2 * MAPS, m * 2 * MAPS);
-    }
-  }
-  return mapC;
+/** The painted map plus the world rectangle it covers. */
+export interface MinimapTexture {
+  canvas: HTMLCanvasElement;
+  minX: number;
+  minZ: number;
+  width: number;
+  height: number;
+}
+
+export function buildMapTexture(map: CampusMap): MinimapTexture {
+  const t = map.terrainGrid;
+  const width = (t.width - 1) * t.cellSize;
+  const height = (t.height - 1) * t.cellSize;
+  const canvas = paintMap(map, MINIMAP_PALETTE, Math.round(width * MAP_PX_PER_M), Math.round(height * MAP_PX_PER_M));
+  return { canvas, minX: t.originX, minZ: t.originZ, width, height };
 }
 
 export function drawMinimap(
   ctx: CanvasRenderingContext2D,
-  mapC: HTMLCanvasElement,
+  tex: MinimapTexture | null,
   camYaw: number,
   camX: number,
   camZ: number,
@@ -50,7 +46,7 @@ export function drawMinimap(
   const c = ctx;
   const cx = 90;
   const cy = 90;
-  const z = 0.8;
+  const z = ZOOM;
   const px = camX;
   const pz = camZ;
   const fx = Math.sin(camYaw);
@@ -63,10 +59,11 @@ export function drawMinimap(
   c.beginPath();
   c.arc(cx, cy, 88, 0, Math.PI * 2);
   c.clip();
-  c.fillStyle = "#1b2a1a";
+  c.fillStyle = "#2a3324";
   c.fillRect(0, 0, 180, 180);
+  // World -> screen: the camera's forward points up, its right points right.
   c.setTransform(z * rx, -z * fx, z * rz, -z * fz, cx - z * (rx * px + rz * pz), cy + z * (fx * px + fz * pz));
-  c.drawImage(mapC, -MAPR, -MAPR, MAPR * 2, MAPR * 2);
+  if (tex) c.drawImage(tex.canvas, tex.minX, tex.minZ, tex.width, tex.height);
   for (const dot of dots) {
     c.fillStyle = dot.color;
     c.beginPath();

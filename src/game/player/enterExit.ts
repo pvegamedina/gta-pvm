@@ -1,7 +1,8 @@
 // Entering/exiting vehicles: nearest-vehicle probe, free-spot check for the
 // exit point, and the enter/exit state transitions.
 
-import { groundY, circleVsCollider, type CollisionGrid, type HitInfo } from "../world/colliders";
+import { circleVsCollider, type CollisionGrid, type HitInfo } from "../world/colliders";
+import { groundY } from "../world/ground";
 import { resolveFoot } from "./foot";
 import type { Vehicle } from "../vehicles/meshes";
 import type { PlayerState } from "./playerState";
@@ -101,7 +102,7 @@ export function exitCar(player: PlayerState, grid: CollisionGrid, vehicles: Vehi
   player.car = null;
   player.x = px;
   player.z = pz;
-  player.y = groundY(px, pz);
+  player.y = groundY(px, pz, v.y + 1);
   player.yaw = v.yaw;
   player.vx = player.vz = 0;
   player.vy = 0;
@@ -123,7 +124,7 @@ export function forceExitCar(player: PlayerState, grid: CollisionGrid, vehicles:
   const side = (v.spec.W / 2 + 1) * v.spec.door.side;
   player.x = v.x + Math.cos(v.yaw) * side;
   player.z = v.z + -Math.sin(v.yaw) * side;
-  player.y = groundY(player.x, player.z);
+  player.y = groundY(player.x, player.z, v.y + 1);
   player.mesh.group.visible = true;
   resolveFoot(player, grid, vehicles);
 }

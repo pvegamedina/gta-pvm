@@ -1,6 +1,6 @@
-// Engine entry point: builds the scene/city, wires input, physics, combat,
-// health, HUD and networking, and runs the fixed-step game loop. Mirrors the
-// legacy single-file game's structure, split across src/game/** modules.
+// Engine entry point: loads the Campus de El Carmen map and builds the world
+// from it (world/campus/*), wires input, physics, combat, health, HUD and
+// networking, and runs the fixed-step game loop.
 // Deaths hand the body over to physics/corpses.ts (Rapier ragdolls, local and
 // visual only) so it stays on the ground while the entity respawns fresh.
 
@@ -19,24 +19,25 @@ import {
 } from "@shared/protocol";
 
 import { STEP } from "./core/constants";
-import { createRng, WORLD_SEED } from "./core/rng";
 import { clamp } from "./core/math";
 
-import { CollisionGrid, groundY } from "./world/colliders";
-import { createCityState } from "./world/cityState";
+import { CollisionGrid } from "./world/colliders";
+import { groundY, resetGround } from "./world/ground";
 import { createEnvironment } from "./world/environment";
-import { buildGround } from "./world/ground";
-import { buildBlocks } from "./world/buildings";
-import { buildSignals } from "./world/signals";
-import { buildStreet, buildScenery } from "./world/street";
-import { buildMapTexture, drawMinimap, type MinimapDot } from "./world/minimap";
+import { drawMinimap, type MinimapDot } from "./world/minimap";
+import { buildCampusWorld, type CampusWorld } from "./world/campus/campusWorld";
+import { loadNatureAssets, updateNatureVisibility, type NatureAssets } from "./world/campus/nature";
+import { fetchCampusMap, type CampusMap } from "./map/loader";
+import { createRoadIndex, nearestRoadPoint } from "./map/queries";
+import { isDrivable } from "./world/campus/mapPainter";
 
 import { addVeh, visualVeh, removeVeh, type Vehicle } from "./vehicles/meshes";
 import { loadVehicleAssets } from "./vehicles/vehicleAssets";
 import { resolveVehicleType } from "./vehicles/catalog";
 import { sirenFlash } from "./vehicles/animation";
 import { HoldKey } from "./core/holdKey";
-import { spawnVehicles, updateAI } from "./vehicles/traffic";
+import { maintainTraffic, settleOnGround, spawnParked, updateAI } from "./vehicles/traffic";
+import { distanceToStop, signalState } from "./vehicles/roadNetwork";
 import { updatePlayerCar } from "./vehicles/playerCar";
 
 import { randomPedColors, type HumanColors } from "./player/human";
@@ -56,7 +57,7 @@ import { applyDamage, tickRegen, respawn as respawnHealth, vehicleHitDamage, cra
 import { createEffectsSystem, type ImpactKind } from "./combat/effects";
 import { ShootableRegistry, castShot, type RaycastShotResult } from "./combat/shootables";
 import { WEAPON_FEEL, spreadToCrosshairGap } from "./combat/recoil";
-import { rayGroundHit } from "./combat/impacts";
+import { rayTerrainHit } from "./combat/impacts";
 
 import { loadRapier, PhysicsWorld, type PhysicsVehicle } from "./physics/physicsWorld";
 import { CorpseManager } from "./physics/corpses";
@@ -82,6 +83,13 @@ const $ = (id: string) => document.getElementById(id);
 /** Procedural-fallback look of the local player (the model rig ignores it). */
 const PLAYER_COLORS: HumanColors = { skin: 0xe0ac84, shirt: 0xd9442b, pants: 0x2b3a55, hair: 0x2a1c14, shoe: 0xf0f0f0 };
 const PED_COUNT = 32;
+/** Fog start/end (m): the campus is ~1.2 km across. */
+const FOG_NEAR = 160;
+const FOG_FAR = 1100;
+/** Seconds between traffic upkeep passes (despawn far cars, top up near the player). */
+const TRAFFIC_UPKEEP_S = 0.5;
+/** Vehicles farther than this from the camera focus are not drawn (m). */
+const VEHICLE_VIEW = 240;
 /** A network "killed" is matched to a shot that landed this recently / this close (for the ragdoll impulse). */
 const KILL_SHOT_MAX_AGE = 0.8;
 const KILL_SHOT_MAX_DIST = 2.2;
@@ -161,33 +169,76 @@ export function createGame(): GameHandle {
   renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(0xbfdcf2, 120, 900);
+  // Fog/far plane sized for the ~1.2 km campus.
+  scene.fog = new THREE.Fog(0xbfdcf2, FOG_NEAR, FOG_FAR);
   const camera = new THREE.PerspectiveCamera(65, 1, 0.5, 2500);
 
   const env = createEnvironment(scene);
   const grid = new CollisionGrid();
-  const city = createCityState();
   const shootables = new ShootableRegistry();
-  const rng = createRng(WORLD_SEED);
+  const anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 
-  // World build — rng() call order must match the legacy game exactly.
-  buildGround(scene);
-  buildBlocks(scene, rng, grid, city, env, shootables);
-  const signals = buildSignals(scene, grid);
-  buildStreet(scene, rng, grid, city, env);
-  buildScenery(scene);
-  const mapTexture = buildMapTexture();
+  /** The campus, built from the map file once it is loaded (Boot below). */
+  let world: CampusWorld | null = null;
+  /** Dev hook: draw every vegetation chunk regardless of distance (aerial screenshots). */
+  let natureShowAll = false;
+  /** Drivable-road lookup used to park the player's first car by the kerb. */
+  let roadIndex: ReturnType<typeof createRoadIndex> | null = null;
 
-  // Vehicles spawn once their models are loaded (Boot below) and on every reset.
+  // Vehicles spawn once their models and the map are loaded (Boot below) and on every reset.
   const vehicles: Vehicle[] = [];
-  function respawnVehicles(): void {
-    for (const v of vehicles) {
+  /** Vehicles whose hitbox is registered as a shootable. */
+  const registeredCars = new Set<Vehicle>();
+  /** AI cars that ran off the end of a dead-end road this tick (recycled by maintainTraffic). */
+  const deadCars = new Set<Vehicle>();
+  let trafficTimer = 0;
+
+  /** Keeps the shootable registry in sync with the vehicle list (traffic comes and goes). */
+  function syncVehicleHitboxes(removed: readonly Vehicle[] = []): void {
+    for (const v of removed) {
       shootables.remove(v.hitbox);
-      removeVeh(scene, v);
+      registeredCars.delete(v);
     }
+    for (const v of vehicles) {
+      if (registeredCars.has(v)) continue;
+      shootables.add(v.hitbox, { kind: "vehicle", refId: v });
+      registeredCars.add(v);
+    }
+  }
+
+  /** A kerbside parking spot on the drivable road nearest (x, z), facing along it. */
+  function carSlotNear(x: number, z: number): { x: number; z: number; yaw: number } | null {
+    if (!world || !roadIndex) return null;
+    const roads = world.map.roads;
+    const hit = nearestRoadPoint(roadIndex, x, z, { maxDistance: 80, filter: (r) => isDrivable(r.class) && !r.bridge && r.class !== "motorway" });
+    if (!hit) return null;
+    const r = roads[hit.road];
+    const [ax, az] = r.points[hit.segment];
+    const [bx, bz] = r.points[hit.segment + 1];
+    const yaw = Math.atan2(bx - ax, bz - az);
+    // Right-hand kerb of the road's drawing direction: right = (-cos yaw, sin yaw).
+    const side = r.width / 2 - 1.2;
+    return { x: hit.x - Math.cos(yaw) * side, z: hit.z + Math.sin(yaw) * side, yaw };
+  }
+
+  function respawnVehicles(near?: { x: number; z: number }): void {
+    for (const v of vehicles) removeVeh(scene, v);
+    syncVehicleHitboxes(vehicles);
     vehicles.length = 0;
-    spawnVehicles(scene, vehicles, city);
-    for (const v of vehicles) shootables.add(v.hitbox, { kind: "vehicle", refId: v });
+    deadCars.clear();
+    if (!world) return;
+    spawnParked(scene, vehicles, world.map, near ? carSlotNear(near.x, near.z) : null);
+    const fx = near?.x ?? 0;
+    const fz = near?.z ?? 0;
+    for (let k = 0; k < 12; k++) maintainTraffic(scene, vehicles, world.roadNet, fx, fz, deadCars);
+    syncVehicleHitboxes();
+  }
+
+  /** A random spawn point from the map (protocol fallback list before it loads). */
+  function randomSpawn(): { x: number; z: number; yaw: number } {
+    const list = world && world.spawns.length > 0 ? world.spawns : SPAWN_POINTS;
+    const sp = list[Math.floor(Math.random() * list.length)];
+    return { x: sp.x, z: sp.z, yaw: sp.yaw };
   }
   /** Long press of H in a car with a light bar toggles it and the siren (a tap is the horn). */
   const hornKey = new HoldKey(0.45);
@@ -238,9 +289,10 @@ export function createGame(): GameHandle {
     peds = [];
   }
 
-  function respawnPeds(): void {
+  function respawnPeds(x: number, z: number): void {
     despawnPeds();
-    peds = spawnPeds(scene, PED_COUNT, rigFactory);
+    if (!world) return;
+    peds = spawnPeds(scene, PED_COUNT, rigFactory, world.footNet, x, z);
     for (const p of peds) shootables.add(p.mesh.group, { kind: "ped", refId: p });
   }
 
@@ -436,7 +488,7 @@ export function createGame(): GameHandle {
     player.x = x;
     player.z = z;
     player.yaw = yaw;
-    player.y = 0.25;
+    player.y = groundY(x, z);
     player.vx = player.vz = player.vy = 0;
     player.ground = true;
     player.mesh.group.rotation.set(0, yaw, 0);
@@ -554,7 +606,7 @@ export function createGame(): GameHandle {
     let normal = res.normal;
     const living = !!res.hit && (res.hit.kind === "ped" || res.hit.kind === "remotePlayer");
     if (res.hit) kind = living ? "flesh" : res.hit.kind === "building" ? "surface" : "vehicle";
-    const gd = rayGroundHit(origin, dir, dist, groundY);
+    const gd = rayTerrainHit(origin, dir, dist, (x, z) => groundY(x, z));
     if (gd !== null && gd < dist) {
       dist = gd;
       point = origin.clone().addScaledVector(dir, gd);
@@ -575,10 +627,10 @@ export function createGame(): GameHandle {
     cam.recoil.reset();
     player.mode = "foot";
     player.car = null;
-    const spawn = pendingSpawn || { x: 21, z: 10.2, yaw: 2.3 };
+    const spawn = pendingSpawn || randomSpawn();
     player.x = spawn.x;
     player.z = spawn.z;
-    player.y = 0.25;
+    player.y = groundY(spawn.x, spawn.z);
     player.yaw = spawn.yaw;
     player.vx = player.vz = player.vy = 0;
     player.ground = true;
@@ -593,8 +645,8 @@ export function createGame(): GameHandle {
     deathAt = null;
     hud.hideDeathOverlay();
     env.state.tod = 9.5;
-    respawnVehicles();
-    respawnPeds();
+    respawnVehicles(spawn);
+    respawnPeds(spawn.x, spawn.z);
     player.mesh.group.position.set(player.x, player.y, player.z);
     player.mesh.group.rotation.set(0, player.yaw, 0);
     cam.yaw = player.yaw;
@@ -886,7 +938,8 @@ export function createGame(): GameHandle {
 
   function step(dt: number): void {
     tClock += dt;
-    signals.update(env.state.tod);
+    const w = world!;
+    w.signals.update(tClock);
 
     if (player.alive) {
       if (player.mode === "foot") {
@@ -927,9 +980,16 @@ export function createGame(): GameHandle {
     tickRegen(player, dt, tClock);
     tickWeapon(player.ammo[player.weapon], WEAPONS[player.weapon], dt);
 
-    for (const v of vehicles) if (v.mode === "ai") updateAI(v, dt, vehicles, env.state.tod, player);
-    updatePeds(scene, peds, dt, vehicles, player, cam.fx, cam.fz);
+    for (const v of vehicles) if (v.mode === "ai" && !updateAI(v, dt, vehicles, w.roadNet, tClock, player)) deadCars.add(v);
+    trafficTimer -= dt;
+    if (trafficTimer <= 0) {
+      trafficTimer = TRAFFIC_UPKEEP_S;
+      syncVehicleHitboxes(maintainTraffic(scene, vehicles, w.roadNet, cam.fx, cam.fz, deadCars));
+    }
+    updatePeds(peds, dt, vehicles, player, cam.fx, cam.fz, w.footNet);
     for (const v of vehicles) {
+      // Far cars are hidden (the fog hides them anyway; saves their draw calls).
+      v.root.visible = v.mode === "player" || Math.hypot(v.x - cam.fx, v.z - cam.fz) < VEHICLE_VIEW;
       if (v.mode === "parked" && v.visual.settled) continue;
       visualVeh(v, dt, env.state.nightF);
     }
@@ -940,8 +1000,8 @@ export function createGame(): GameHandle {
     corpses.step(physicsCars);
     if (player.mode === "car" && player.car) {
       const v = player.car;
-      env.carSpot.position.set(v.x + Math.sin(v.yaw) * 1.5, 1.0, v.z + Math.cos(v.yaw) * 1.5);
-      env.carSpot.target.position.set(v.x + Math.sin(v.yaw) * 25, 0, v.z + Math.cos(v.yaw) * 25);
+      env.carSpot.position.set(v.x + Math.sin(v.yaw) * 1.5, v.y + 1.0, v.z + Math.cos(v.yaw) * 1.5);
+      env.carSpot.target.position.set(v.x + Math.sin(v.yaw) * 25, v.y, v.z + Math.cos(v.yaw) * 25);
       env.carSpot.intensity = env.state.nightF * 1.6;
     }
     updateSirenLight();
@@ -1061,6 +1121,26 @@ export function createGame(): GameHandle {
 
   // ---------------- Frame loop ----------------
   const _viewDir = new THREE.Vector3();
+  const _frustum = new THREE.Frustum();
+  const _viewProj = new THREE.Matrix4();
+  const _sphere = new THREE.Sphere(new THREE.Vector3(), 1.3);
+
+  /**
+   * Skinned character rigs are never frustum-culled by three (their bounds
+   * move with the animation), so hide pedestrians outside the view ourselves:
+   * a dozen-plus draw calls each.
+   */
+  function cullPeds(): void {
+    camera.updateMatrixWorld();
+    _viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    _frustum.setFromProjectionMatrix(_viewProj);
+    for (const p of peds) {
+      const g = p.mesh.group;
+      if (!g.visible) continue;
+      _sphere.center.set(g.position.x, g.position.y + 0.9, g.position.z);
+      if (!_frustum.intersectsSphere(_sphere)) g.visible = false;
+    }
+  }
   let last = 0;
   let acc = 0;
   let rafId = 0;
@@ -1071,11 +1151,13 @@ export function createGame(): GameHandle {
     last = t;
 
     if (!started) {
+      // Attract mode: a slow aerial orbit around the campus.
       env.tickClockOnly(dt);
-      const a = t / 9000;
-      camera.position.set(Math.cos(a) * 230, 70, Math.sin(a) * 230);
-      camera.lookAt(0, 10, 0);
-      env.update(dt, 0, 0, camera);
+      const a = t / 16000;
+      const c = world?.centre ?? new THREE.Vector3();
+      camera.position.set(c.x + Math.cos(a) * 470, c.y + 210, c.z + Math.sin(a) * 470);
+      camera.lookAt(c.x, c.y, c.z);
+      env.update(dt, c.x, c.z, camera, c.y);
       renderer.render(scene, camera);
       preview?.render(dt);
       return;
@@ -1105,6 +1187,7 @@ export function createGame(): GameHandle {
       // Camera first: the rig levels the gun at this frame's aim pitch.
       const focus = deathAt !== null && localCorpse && localCorpse.focus(corpseFocus) ? corpseFocus : null;
       updateCamera(cam, camera, player, dt, tClock, grid, focus);
+      cullPeds();
       aimPitch = viewPitch();
       if (player.mode === "foot") {
         player.mesh.update(dt, {
@@ -1116,7 +1199,8 @@ export function createGame(): GameHandle {
           aimPitch,
         });
       }
-      env.update(dt, cam.fx, cam.fz, camera);
+      env.update(dt, cam.fx, cam.fz, camera, groundY(cam.fx, cam.fz, cam.fy));
+      if (world?.nature) updateNatureVisibility(world.nature, cam.fx, cam.fz, natureShowAll);
       corpses.update(dt);
       effects.update(dt);
       remotePlayers.update(dt, env.state.nightF);
@@ -1127,7 +1211,7 @@ export function createGame(): GameHandle {
         const left = Math.max(0, (deathAt + RESPAWN_DELAY_MS / 1000 - tClock));
         hud.showDeathOverlay(killerAtDeath, left);
         if (left <= 0 && !net.isOnline()) {
-          const sp = SPAWN_POINTS[Math.floor(Math.random() * SPAWN_POINTS.length)];
+          const sp = randomSpawn();
           teleportPlayer(sp.x, sp.z, sp.yaw);
           respawnHealth(player);
           refillAmmo();
@@ -1245,7 +1329,7 @@ export function createGame(): GameHandle {
       dots.push({ x: m.p[0], z: m.p[2], color: "#4ea8ff", r: 3 });
     }
     const headingYaw = player.mode === "car" && player.car ? player.car.yaw : player.yaw;
-    drawMinimap(miniCtx, mapTexture, cam.yaw, cam.fx, cam.fz, headingYaw, dots);
+    drawMinimap(miniCtx, world?.minimap ?? null, cam.yaw, cam.fx, cam.fz, headingYaw, dots);
   }
 
   // ---------------- Character picker ----------------
@@ -1307,16 +1391,16 @@ export function createGame(): GameHandle {
   // ---------------- Boot ----------------
   resize();
   env.update(0, 0, 0, camera);
-  signals.update(env.state.tod);
   rafId = requestAnimationFrame(frame);
 
-  // The attract camera renders right away; "Jugar" waits for the character
-  // models. A failed load falls back to the procedural humans.
+  // The attract camera renders right away; "Jugar" waits for the campus map
+  // (built as soon as it arrives) and the character models. A failed model
+  // load falls back to procedural humans / box cars; a failed map is fatal.
   const playLabel = btnPlay?.textContent ?? "Jugar";
-  function setPlayLoading(loading: boolean): void {
+  function setPlayLoading(loading: boolean, label = "Cargando campus…"): void {
     if (!(btnPlay instanceof HTMLButtonElement)) return;
     btnPlay.disabled = loading;
-    btnPlay.textContent = loading ? "Cargando personajes…" : playLabel;
+    btnPlay.textContent = loading ? label : playLabel;
   }
   setPlayLoading(true);
   const factoryReady = loadCharacterAssets()
@@ -1329,14 +1413,44 @@ export function createGame(): GameHandle {
   const vehiclesReady = loadVehicleAssets().catch((err: unknown) => {
     console.warn("[assets] vehicle models failed to load, using procedural cars", err);
   });
+  // The campus map and the vegetation models.
+  const mapReady: Promise<CampusMap | null> = fetchCampusMap().catch((err: unknown) => {
+    console.error("[map] could not load the campus map", err);
+    return null;
+  });
+  const natureReady: Promise<NatureAssets | null> = loadNatureAssets().catch((err: unknown) => {
+    console.warn("[assets] nature models failed to load, the campus will have no trees", err);
+    return null;
+  });
+  // Build the world as soon as the map (and trees) are in, so the attract view shows it.
+  const worldReady = Promise.all([mapReady, natureReady]).then(([map, nature]) => {
+    if (disposed || !map) return null;
+    const t0 = performance.now();
+    const w = buildCampusWorld(scene, map, env, grid, shootables, anisotropy);
+    if (nature) w.addNature(nature);
+    roadIndex = createRoadIndex(map.roads);
+    world = w;
+    console.info(
+      `[world] campus built in ${Math.round(performance.now() - t0)} ms: roads ${w.roads.stats.triangles} tris, buildings ${w.buildings.stats.triangles} tris, ` +
+        `${w.nature?.stats.trees ?? 0} trees + ${w.nature?.stats.scatter ?? 0} scatter, ${w.signals.count} signal heads`,
+    );
+    return w;
+  });
   // Rapier loads in parallel; a failure (null) keeps animated, non-physical corpses.
-  Promise.all([factoryReady, loadRapier(), vehiclesReady])
-    .then(([factory, R]) => {
+  Promise.all([factoryReady, loadRapier(), vehiclesReady, worldReady])
+    .then(([factory, R, , w]) => {
       if (disposed) return;
+      if (!w) {
+        setPlayLoading(true, "Error al cargar el mapa");
+        const err = $("err");
+        if (err) err.textContent = "No se pudo cargar el mapa del campus. Recarga la página para intentarlo de nuevo.";
+        return;
+      }
       if (R) {
         try {
           physics = new PhysicsWorld(R);
-          physics.addGround();
+          physics.addTerrain(w.map.terrainGrid);
+          physics.addStaticTrimesh(w.buildings.trimesh.vertices, w.buildings.trimesh.indices);
           physics.addGridColliders(grid);
           corpses.setPhysics(physics);
         } catch (err) {
@@ -1348,30 +1462,81 @@ export function createGame(): GameHandle {
       assetsReady = true;
       rebuildPlayerRig();
       remotePlayers.setRigFactory(factory);
-      respawnPeds();
-      respawnVehicles();
       remotePlayers.refreshCars();
       setPlayLoading(false);
       initCharacterPicker();
     });
 
-  // Dev-only read-only telemetry for automated checks (engine rpm/gear, aim pitch).
+  // Dev-only telemetry and staging helpers for automated visual checks.
   const debugHook = process.env.NODE_ENV === "development";
   if (debugHook) {
     (window as unknown as Record<string, unknown>).__gtaDebug = {
       engine: () => audio.engineTelemetry(),
-      player: () => ({ x: player.x, z: player.z, vx: player.vx, vz: player.vz, speed: footSpeed(player), mode: player.mode, aimPitch }),
+      player: () => ({ x: player.x, y: player.y, z: player.z, vx: player.vx, vz: player.vz, speed: footSpeed(player), mode: player.mode, aimPitch, alive: player.alive }),
       vehicles: () =>
-        vehicles.map((v) => ({ type: v.type, x: v.x, z: v.z, yaw: v.yaw, mode: v.mode, speed: v.speed, siren: v.siren, sirenT: v.sirenT, fallback: v.visual.fallback, lit: { ...v.visual.lit } })),
+        vehicles.map((v) => ({
+          type: v.type,
+          x: v.x,
+          y: v.y,
+          z: v.z,
+          yaw: v.yaw,
+          mode: v.mode,
+          speed: v.speed,
+          tPitch: v.tPitch,
+          tRoll: v.tRoll,
+          siren: v.siren,
+          sirenT: v.sirenT,
+          fallback: v.visual.fallback,
+          lit: { ...v.visual.lit },
+          edge: v.ai?.driver.edge ?? -1,
+          braking: v.braking,
+        })),
+      peds: () => peds.map((p) => ({ x: p.x, z: p.z, state: p.state, visible: p.mesh.group.visible })),
       /** Dev-only staging for visual checks: drops a parked car (catalogue or legacy type) at a spot. */
       spawnVehicle: (type: string, x: number, z: number, yaw: number, color = 0x2f6fd6) => {
         const v = addVeh(scene, resolveVehicleType(type), color, x, z, yaw, "parked");
         v.y = groundY(x, z);
+        settleOnGround(v, 0, true);
         visualVeh(v, 0, env.state.nightF);
         vehicles.push(v);
-        shootables.add(v.hitbox, { kind: "vehicle", refId: v });
+        syncVehicleHitboxes();
         return vehicles.length - 1;
       },
+      teleport: (x: number, z: number, yaw = player.yaw) => teleportPlayer(x, z, yaw),
+      /** Traffic AI state of vehicle i: distance to its stop line and the light it sees. */
+      aiState: (i: number) => {
+        const v = vehicles[i];
+        if (!v?.ai || !world) return null;
+        const d = v.ai.driver;
+        const j = world.roadNet.stopJunction(d.edge);
+        const light = j >= 0 && !d.onLink ? signalState(world.roadNet.junctionOffset(j), world.roadNet.approachGroup(d.edge), tClock) : null;
+        return { edge: d.edge, onLink: d.onLink, junction: j, distStop: distanceToStop(d, world.roadNet), light, speed: v.speed };
+      },
+      /** Kills the local player (offline checks of the ragdoll on terrain). */
+      die: () => {
+        player.health = 0;
+        player.alive = false;
+        onLocalDeath(null);
+      },
+      /** Turns the follow camera to a yaw / pitch. */
+      look: (yaw: number, pitch = cam.pitch) => {
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+      },
+      showAllNature: (all: boolean) => {
+        natureShowAll = all;
+        if (world?.nature) updateNatureVisibility(world.nature, cam.fx, cam.fz, all);
+      },
+      ground: (x: number, z: number) => groundY(x, z),
+      setTime: (tod: number) => {
+        env.state.tod = tod;
+      },
+      clock: () => tClock,
+      /** Signal heads/junctions and the light shown to each approach right now. */
+      junctions: () => world?.map.trafficLights.map((j, i) => ({ i, x: j.x, z: j.z })) ?? [],
+      buildings: () => world?.buildings.info.filter((b) => b.name).map((b) => ({ name: b.name, x: b.centroid[0], z: b.centroid[1], base: b.base, top: b.top })) ?? [],
+      renderInfo: () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures }),
+      worldStats: () => (world ? { roads: world.roads.stats, buildings: world.buildings.stats, nature: world.nature?.stats ?? null, signals: world.signals.count } : null),
     };
   }
 
@@ -1384,6 +1549,7 @@ export function createGame(): GameHandle {
       despawnPeds();
       corpses.clear();
       physics?.dispose();
+      resetGround();
       remotePlayers.dispose();
       effects.dispose();
       audio.dispose();

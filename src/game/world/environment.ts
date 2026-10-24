@@ -17,7 +17,8 @@ export interface BuildingLightMat {
 export interface Environment {
   scene: THREE.Scene;
   state: EnvState;
-  update(dt: number, fx: number, fz: number, camera: THREE.PerspectiveCamera): void;
+  /** `fy` is the ground height at the focus (the sun's shadow frustum follows it). */
+  update(dt: number, fx: number, fz: number, camera: THREE.PerspectiveCamera, fy?: number): void;
   registerBuildingMat(m: THREE.MeshLambertMaterial): void;
   lightMats: { bulb: THREE.MeshBasicMaterial | null; pool: THREE.MeshBasicMaterial | null; head: THREE.MeshLambertMaterial | null };
   lightDir: THREE.Vector3;
@@ -139,10 +140,11 @@ export function createEnvironment(scene: THREE.Scene): Environment {
   sun.shadow.mapSize.set(2048, 2048);
   {
     const s = sun.shadow.camera;
-    s.left = -70;
-    s.right = 70;
-    s.top = 70;
-    s.bottom = -70;
+    // Shadow frustum (m) centred on the player and moved with them every frame.
+    s.left = -80;
+    s.right = 80;
+    s.top = 80;
+    s.bottom = -80;
     s.near = 1;
     s.far = 500;
   }
@@ -162,7 +164,7 @@ export function createEnvironment(scene: THREE.Scene): Environment {
   const state: EnvState = { tod: 9.5, nightF: 0 };
   let lt = 0;
 
-  function update(dt: number, fx: number, fz: number, camera: THREE.PerspectiveCamera) {
+  function update(dt: number, fx: number, fz: number, camera: THREE.PerspectiveCamera, fy = 0) {
     lt += dt;
     state.tod = (state.tod + dt * (24 / 480)) % 24;
     const a = ((state.tod - 6) / 24) * Math.PI * 2;
@@ -187,8 +189,8 @@ export function createEnvironment(scene: THREE.Scene): Environment {
       sun.color.copy(moonCol);
       sun.intensity = 0.3 * smooth(-0.02, 0.2, -sunH) * Math.PI;
     }
-    sun.target.position.set(fx, 0, fz);
-    sun.position.set(fx + lightDir.x * 200, lightDir.y * 200, fz + lightDir.z * 200);
+    sun.target.position.set(fx, fy, fz);
+    sun.position.set(fx + lightDir.x * 200, fy + lightDir.y * 200, fz + lightDir.z * 200);
     skyMesh.position.copy(camera.position);
     sunSprite.position.copy(camera.position).addScaledVector(sv, 800);
     sunSprite.visible = sunH > -0.06;
@@ -224,16 +226,4 @@ export function createEnvironment(scene: THREE.Scene): Environment {
     hemi,
     carSpot,
   };
-}
-
-export function lightState(tod: number, axis: 0 | 1): "R" | "Y" | "G" {
-  const t = tod % 24;
-  if (axis === 0) {
-    if (t < 9) return "G";
-    if (t < 10.5) return "Y";
-    return "R";
-  }
-  if (t >= 12 && t < 21) return "G";
-  if (t >= 21 && t < 22.5) return "Y";
-  return "R";
 }

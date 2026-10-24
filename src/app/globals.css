@@ -132,6 +132,12 @@ kbd {
   opacity: 0.65;
   max-width: 620px;
 }
+.attribution {
+  font-size: 11px;
+  opacity: 0.5;
+  margin-top: 14px;
+  max-width: 620px;
+}
 .err {
   color: #ff8080;
   margin-top: 10px;

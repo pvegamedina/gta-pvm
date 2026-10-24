@@ -1,13 +1,14 @@
 // Local, visual-only rigid-body world (Rapier) for ragdoll corpses. Nothing
 // here is networked or affects gameplay: every client simulates its own
-// bodies. Holds the static city (ground, raised blocks, the CollisionGrid's
-// boxes/cylinders), kinematic proxies of the cars (synced every step so
+// bodies. Holds the static campus (terrain heightfield, buildings trimesh,
+// the CollisionGrid's boxes/cylinders), kinematic proxies of the cars (synced every step so
 // driving into a corpse shoves it) and the corpse collision-group slots.
 // Rapier (WASM, inlined in the compat build) is loaded lazily via loadRapier().
 
 import type RAPIER_NS from "@dimforge/rapier3d-compat";
-import { G, BLOCK, bc, STEP } from "../core/constants";
+import { STEP } from "../core/constants";
 import type { CollisionGrid } from "../world/colliders";
+import type { Terrain } from "../map/terrain";
 
 export type Rapier = typeof RAPIER_NS;
 type World = InstanceType<Rapier["World"]>;
@@ -90,19 +91,47 @@ export class PhysicsWorld {
     this.world.numSolverIterations = 8;
   }
 
-  /** Ground (top at y=0) plus the 0.25 m raised city blocks/sidewalks (see world/colliders.ts groundY). */
-  addGround(): void {
-    this.addStaticBox(0, -0.5, 0, 3000, 0.5, 3000);
-    for (let i = 0; i < G; i++) for (let j = 0; j < G; j++) this.addStaticBox(bc(i), 0.125, bc(j), BLOCK / 2, 0.125, BLOCK / 2);
+  /**
+   * The map terrain as a Rapier heightfield. Rapier's heightfield has (nrows + 1)
+   * x (ncols + 1) samples stored column-major (index = col * (nrows + 1) + row),
+   * rows along local z and columns along local x, spanning `scale` and centred
+   * on the collider's translation. Our grid stores sample (i, j) at j * width + i
+   * with i along x and j along z (north -> south), so rows = j and cols = i.
+   */
+  addTerrain(t: Terrain): void {
+    const nrows = t.height - 1;
+    const ncols = t.width - 1;
+    const heights = new Float32Array(t.width * t.height);
+    for (let i = 0; i < t.width; i++) for (let j = 0; j < t.height; j++) heights[i * t.height + j] = t.heights[j * t.width + i];
+    const sx = ncols * t.cellSize;
+    const sz = nrows * t.cellSize;
+    const desc = this.R.ColliderDesc.heightfield(nrows, ncols, heights, { x: sx, y: 1, z: sz })
+      .setTranslation(t.originX + sx / 2, 0, t.originZ + sz / 2)
+      .setCollisionGroups(STATIC_GROUPS)
+      .setFriction(0.9);
+    this.world.createCollider(desc);
   }
 
-  /** Mirrors every CollisionGrid collider (buildings, kiosks, fountains, trees, poles, benches). */
+  /** A static triangle mesh (the campus buildings). */
+  addStaticTrimesh(vertices: Float32Array, indices: Uint32Array): void {
+    if (indices.length === 0) return;
+    const desc = this.R.ColliderDesc.trimesh(vertices, indices).setCollisionGroups(STATIC_GROUPS).setFriction(0.8);
+    this.world.createCollider(desc);
+  }
+
+  /**
+   * Mirrors the CollisionGrid's boxes and cylinders (tree trunks, signal
+   * poles) at their absolute heights. Building polygons are skipped: the
+   * buildings come in as one trimesh (addStaticTrimesh).
+   */
   addGridColliders(grid: CollisionGrid): void {
     for (const c of grid.all()) {
-      if (c.t === 0) this.addStaticBox(c.x, c.h / 2, c.z, c.hx, c.h / 2, c.hz);
-      else {
-        const h = Math.min(c.h, CIRCLE_MAX_HEIGHT);
-        const desc = this.R.ColliderDesc.cylinder(h / 2, c.r).setTranslation(c.x, h / 2, c.z).setCollisionGroups(STATIC_GROUPS).setFriction(0.8);
+      if (c.t === 0) this.addStaticBox(c.x, (c.y0 + c.h) / 2, c.z, c.hx, (c.h - c.y0) / 2, c.hz);
+      else if (c.t === 1) {
+        // From a little underground (slopes) up to a sensible trunk height.
+        const y0 = c.y0 - 0.5;
+        const h = Math.min(c.h - y0, CIRCLE_MAX_HEIGHT);
+        const desc = this.R.ColliderDesc.cylinder(h / 2, c.r).setTranslation(c.x, y0 + h / 2, c.z).setCollisionGroups(STATIC_GROUPS).setFriction(0.8);
         this.world.createCollider(desc);
       }
     }

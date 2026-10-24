@@ -11,7 +11,8 @@ import {
   type WeaponId,
 } from "../shared/protocol";
 
-export const WORLD_LIMIT = 400;
+/** Positions are clamped to this many metres from the map origin (the campus spans about ±640 m). */
+export const WORLD_LIMIT = 700;
 /** Values beyond this are treated as garbage and rejected, not clamped. */
 const ABSURD = 1e5;
 const DAMAGE_CAUSES: readonly DamageCause[] = ["vehicle", "fall", "explosion"];

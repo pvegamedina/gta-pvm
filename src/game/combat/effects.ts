@@ -15,7 +15,7 @@
 import * as THREE from "three";
 import type { WeaponId } from "@shared/protocol";
 import { radialTex } from "../world/materials";
-import { groundY } from "../world/colliders";
+import { groundY } from "../world/ground";
 import type { AudioSystem } from "../audio/audio";
 import { bulletStreak, createBulletStreak } from "./bullets";
 import { shouldTrace } from "./recoil";
@@ -431,7 +431,7 @@ export function createEffectsSystem(scene: THREE.Scene, audio: AudioSystem): Eff
         c.rot.x += c.spin.x * dt;
         c.rot.y += c.spin.y * dt;
         c.rot.z += c.spin.z * dt;
-        const floor = groundY(c.pos.x, c.pos.z) + 0.006;
+        const floor = groundY(c.pos.x, c.pos.z, c.pos.y + 0.5) + 0.006;
         if (c.pos.y < floor) {
           c.pos.y = floor;
           if (Math.abs(c.vel.y) < 0.6) {
@@ -495,7 +495,7 @@ export function createEffectsSystem(scene: THREE.Scene, audio: AudioSystem): Eff
       }
       c.vel.y -= GRAVITY * dt;
       c.pos.addScaledVector(c.vel, dt);
-      const floor = groundY(c.pos.x, c.pos.z);
+      const floor = groundY(c.pos.x, c.pos.z, c.pos.y + 0.5);
       if (c.pos.y < floor) {
         c.pos.y = floor;
         c.vel.multiplyScalar(0.3);

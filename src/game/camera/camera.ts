@@ -6,7 +6,8 @@
 
 import * as THREE from "three";
 import { angLerp, clamp } from "../core/math";
-import type { CollisionGrid } from "../world/colliders";
+import { pointBlocked, type CollisionGrid } from "../world/colliders";
+import { groundY } from "../world/ground";
 import type { Vehicle } from "../vehicles/meshes";
 import type { PlayerState } from "../player/playerState";
 import { CameraRecoil } from "../combat/recoil";
@@ -45,11 +46,16 @@ export function createCameraState(yaw: number): CameraState {
   return { yaw, pitch: 0.3, fx: 0, fy: 1.8, fz: 0, lastMouse: -9, shake: 0, roll: 0, clear: 1, fov: 65, zoom: 1, recoil: new CameraRecoil() };
 }
 
+/** Minimum camera height above the ground (m). */
+const CAM_FLOOR = 0.4;
+
+/** True when a camera at (px, py, pz) would be under the ground or inside / against a wall. */
 function camBlocked(grid: CollisionGrid, px: number, py: number, pz: number): boolean {
-  if (py < 0.35) return true;
+  if (py < groundY(px, pz, py) + CAM_FLOOR) return true;
   let hit = false;
   grid.each(px, pz, 1, (c) => {
-    if (c.t === 0 && py < c.h && Math.abs(px - c.x) < c.hx + 0.5 && Math.abs(pz - c.z) < c.hz + 0.5) hit = true;
+    // Trunks and poles are thin: let the camera pass them instead of zooming in.
+    if (!hit && c.t !== 1 && pointBlocked(c, px, py, pz, 0.5)) hit = true;
   });
   return hit;
 }
@@ -59,7 +65,7 @@ export function snapCamera(cam: CameraState, player: PlayerState): void {
   const tz = player.mode === "car" ? player.car!.z : player.z;
   cam.fx = tx;
   cam.fz = tz;
-  cam.fy = 1.8;
+  cam.fy = (player.mode === "car" ? player.car!.y : player.y) + 1.8;
   cam.clear = 1;
 }
 
@@ -120,7 +126,7 @@ export function updateCamera(
   }
   cam.clear += (tc - cam.clear) * (tc < cam.clear ? 0.5 : 0.08);
   let cx = cam.fx + dx * cam.clear + rightX * aimOffset * cam.clear;
-  let cy = Math.max(0.6, cam.fy + dy * cam.clear);
+  let cy = cam.fy + dy * cam.clear;
   let cz = cam.fz + dz * cam.clear + rightZ * aimOffset * cam.clear;
   if (cam.shake > 0) {
     cx += (Math.random() - 0.5) * cam.shake;
@@ -128,6 +134,8 @@ export function updateCamera(
     cz += (Math.random() - 0.5) * cam.shake;
     cam.shake = Math.max(0, cam.shake - dt * 2.5);
   }
+  // Never below the ground (slopes behind the player, shake).
+  cy = Math.max(cy, groundY(cx, cz, cy) + CAM_FLOOR);
   camera.position.set(cx, cy, cz);
   const lookYaw = aiming ? player.yaw : cam.yaw;
   const lfx = Math.sin(lookYaw);

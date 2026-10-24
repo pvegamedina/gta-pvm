@@ -26,6 +26,7 @@ import {
   parseVec3,
   sanitizeName,
 } from "./validation";
+import { pickSpawn } from "./mapSpawns";
 
 export interface RoomDeps {
   now: () => number;
@@ -37,6 +38,8 @@ export interface RoomDeps {
    * active session per browser" — see onHello). The transport's own "close"
    * handler is expected to call room.leave() for it, same as any disconnect. */
   disconnect: (clientId: string) => void;
+  /** Where players (re)spawn; defaults to the protocol's built-in list (the real server passes the map's). */
+  spawns?: readonly SpawnPoint[];
 }
 
 interface Player extends PlayerSnapshot {
@@ -300,8 +303,7 @@ export class GameRoom {
   }
 
   private pickSpawn(): SpawnPoint {
-    const i = Math.floor(this.deps.random() * SPAWN_POINTS.length) % SPAWN_POINTS.length;
-    return SPAWN_POINTS[i];
+    return pickSpawn(this.deps.spawns ?? SPAWN_POINTS, this.deps.random);
   }
 
   private randomColor(): number {

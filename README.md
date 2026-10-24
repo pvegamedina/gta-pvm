@@ -1,9 +1,33 @@
 # Ciudad Abierta
 
-Un juego de tipo GTA en el navegador: camina, conduce y dispara en una ciudad
-procedural generada con `three.js`, ahora con multijugador online, sistema de
-vida y dos armas (pistola y rifle M4). Construido con Next.js (App Router) y
-TypeScript.
+Un juego de tipo GTA en el navegador: camina, conduce y dispara por una
+recreación jugable del **Campus de El Carmen de la Universidad de Huelva**
+(relieve, calles, edificios y árboles reales) construida con `three.js`, con
+multijugador online, sistema de vida y dos armas (pistola y rifle M4).
+Construido con Next.js (App Router) y TypeScript.
+
+## El mapa: Campus de El Carmen
+
+El mundo se genera a partir de un único fichero de datos,
+`public/maps/campus-el-carmen.json`, producido sin conexión por
+`npm run map:build` (`scripts/map/`) a partir de OpenStreetMap y del modelo
+digital del terreno MDT05 del IGN. Cubre unos 1,2 × 1,3 km alrededor del campus
+(x = este, z = sur, en metros):
+
+- **Relieve real**: malla de alturas cada 4 m (de 3 a 32 m), con el cerro del
+  Cabezo de la Almagra al noroeste; todo (jugador, coches, peatones, cámara,
+  balas, casquillos y cadáveres con física) se apoya en ese terreno.
+- **Calles**: cintas de asfalto adaptadas al terreno con marcas viales, cruces,
+  aceras con bordillo, caminos peatonales, pasos de cebra y los viaductos de la
+  autovía elevados sobre pilares.
+- **Edificios**: las 125 plantas reales extruidas con su altura, fachadas con
+  ventanas por planta, azotea con pretil y colisiones con su forma exacta.
+- **Vegetación**: los 766 árboles mapeados (palmeras, pinos, frondosos y
+  arbustos) más hierba, flores y rocas en parques y céspedes.
+- **Tráfico y peatones**: los coches circulan por el grafo de calles real
+  (sentido único, cruces sin cambios de sentido, semáforos en las 58
+  intersecciones reguladas) y los peatones pasean por aceras y caminos.
+- El servidor lee los puntos de aparición del mismo fichero.
 
 ## Requisitos
 
@@ -67,11 +91,14 @@ Abrí `http://localhost:3000` en el navegador y pulsá **Jugar**.
 src/app/            layout, página y estilos globales (Next.js App Router)
 src/components/      Game.tsx — HUD/overlay y arranque del motor
 src/game/
-  core/              utilidades matemáticas, RNG con semilla, constantes del mundo
-  world/              colisiones, suelo/calles, edificios, mobiliario urbano,
-                       semáforos, entorno (cielo/día-noche), minimapa
-  vehicles/           tipos de vehículo, mallas, física del coche del jugador, IA de tráfico
-  pedestrians/        peatones (paseo, huida, caída al recibir un disparo)
+  core/              utilidades matemáticas y constantes del motor
+  map/               esquema, carga y consultas del fichero del mapa (cliente y servidor)
+  world/             colisiones, altura del suelo, semáforos, entorno (cielo/día-noche),
+                       minimapa
+  world/campus/      construcción del campus: terreno, calles, edificios, agua, vegetación
+  vehicles/           tipos de vehículo, mallas, física del coche del jugador, red de
+                       carriles y IA de tráfico sobre el grafo de calles
+  pedestrians/        peatones sobre el grafo peatonal (paseo, huida, caída)
   player/             mesh humano, física a pie, entrar/salir de vehículos, estado del jugador
   camera/             cámara en tercera persona / sobre el hombro al apuntar
   audio/               motor de sonido WebAudio (motor, bocina, impactos)
@@ -87,7 +114,15 @@ server/               servidor WebSocket autoritativo (desarrollado aparte)
 
 - El tráfico y los peatones son locales a cada cliente (no están sincronizados
   por red); solo los jugadores reales se sincronizan entre clientes.
-- La ciudad se genera con una semilla fija (1337), así que todos los clientes
-  construyen exactamente el mismo mapa.
+- Todos los clientes construyen exactamente el mismo campus a partir del mismo
+  fichero de mapa; la variación de la vegetación sale de un hash estable de la
+  posición de cada árbol.
 - El servidor es autoritativo para la vida: el daño por disparos de otros
   jugadores solo se aplica cuando el servidor lo confirma.
+
+## Créditos y licencias
+
+- Datos del mapa: © colaboradores de OpenStreetMap, disponibles bajo la licencia
+  Open Database License (ODbL).
+- Relieve: MDT05, © Instituto Geográfico Nacional (CC BY 4.0).
+- Modelos 3D (personajes, armas, vehículos, naturaleza y edificios): Quaternius (CC0).

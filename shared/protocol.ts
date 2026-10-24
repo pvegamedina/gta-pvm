@@ -87,23 +87,20 @@ export const RANGE_TOLERANCE = 12;
 /* ================= SPAWNS ================= */
 export interface SpawnPoint { x: number; z: number; yaw: number }
 
-// City layout mirrors the client: G=6 blocks, P=78 (block 60 + road 18).
-// Points sit on the sidewalk ring, clear of street furniture.
-const G = 6, P = 78;
-const rc = (i: number) => (i - G / 2) * P;
-const bc = (i: number) => (i + 0.5 - G / 2) * P;
-
-export const SPAWN_POINTS: SpawnPoint[] = (() => {
-  const pts: SpawnPoint[] = [{ x: 21, z: 10.2, yaw: 2.3 }];
-  for (let i = 0; i < G; i++) {
-    for (let j = 0; j < G; j++) {
-      if ((i + j) % 2 !== 0) continue;
-      pts.push({ x: rc(i) + 12.3, z: bc(j), yaw: Math.PI / 2 });
-      pts.push({ x: bc(i), z: rc(j + 1) - 12.3, yaw: Math.PI });
-    }
-  }
-  return pts;
-})();
+// Fallback spawn points on the Campus de El Carmen (map metres, x east, z
+// south). The server normally reads the full list from the map file
+// (server/mapSpawns.ts) and the client from its loaded map; these keep both
+// working when the map is unavailable.
+export const SPAWN_POINTS: SpawnPoint[] = [
+  { x: -82.3, z: -112, yaw: -0.814 }, // Aulario Galileo Galilei
+  { x: 91.5, z: 105.4, yaw: 0.647 }, // Aulario Paulo Freire
+  { x: -25.2, z: 212.3, yaw: 0.633 }, // Biblioteca Central
+  { x: 290.6, z: 297.9, yaw: -2.484 }, // Comedor Universitario
+  { x: 135.2, z: 428.6, yaw: 0.656 }, // Edificio Alan Turing
+  { x: -82.3, z: 134.9, yaw: 0.646 }, // Edificio Marie Curie
+  { x: 143.5, z: 190.1, yaw: -0.895 }, // Edificio Jacobo del Barco
+  { x: -14.6, z: -265, yaw: 2.253 }, // ETS de Ingeniería
+];
 
 /* ================= PLAYER STATE ================= */
 export interface CarState {

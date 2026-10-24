@@ -96,7 +96,7 @@ export default function Game() {
 
       <div id="start" className="overlay">
         <h1>Ciudad Abierta</h1>
-        <p className="sub">Camina, conduce y explora la ciudad a tu aire</p>
+        <p className="sub">Camina, conduce y explora el Campus de El Carmen (Universidad de Huelva) a tu aire</p>
         <input id="nameInput" className="nameInput" type="text" placeholder="Tu nombre" maxLength={16} />
         <div className="charLabel">Elige tu personaje · <kbd>←</kbd> <kbd>→</kbd></div>
         <div className="charPicker">
@@ -168,6 +168,9 @@ export default function Game() {
           Al jugar, el ratón queda capturado; pulsa Esc para liberarlo y pausar. Si no hay servidor disponible, se juega en modo un jugador.
         </p>
         <p id="err" className="err" />
+        <p className="attribution">
+          Mapa: © colaboradores de OpenStreetMap (ODbL) · Relieve: © Instituto Geográfico Nacional (CC BY 4.0) · Modelos 3D: Quaternius (CC0)
+        </p>
       </div>
 
       <div id="pause" className="overlay hidden">
