@@ -6,11 +6,12 @@ import { clampSettings, isPreset, type Settings } from "./settings";
 
 const $ = (id: string) => document.getElementById(id);
 
-type SliderKey = "mouseSensitivity" | "masterVolume" | "sfxVolume" | "ambienceVolume";
+type SliderKey = "mouseSensitivity" | "cameraMotion" | "masterVolume" | "sfxVolume" | "ambienceVolume";
 
 /** Slider id, settings key, and how the value is shown / mapped from the 0..100 (or raw) input. */
 const SLIDERS: { id: string; key: SliderKey; percent: boolean }[] = [
   { id: "setSens", key: "mouseSensitivity", percent: false },
+  { id: "setCamMotion", key: "cameraMotion", percent: true },
   { id: "setMaster", key: "masterVolume", percent: true },
   { id: "setSfx", key: "sfxVolume", percent: true },
   { id: "setAmbience", key: "ambienceVolume", percent: true },

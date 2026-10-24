@@ -85,3 +85,22 @@ describe("solveTwoBoneIK", () => {
     }
   });
 });
+
+describe("solveTwoBoneIK into a reused result", () => {
+  it("writes the same solution into `out` (no per-frame allocation) and returns it", () => {
+    const out = { mid: { x: 0, y: 0, z: 0 }, end: { x: 0, y: 0, z: 0 }, reached: false };
+    const root = { x: 0, y: 1, z: 0 };
+    const target = { x: 0.3, y: 0.2, z: 0.4 };
+    const pole = { x: 0, y: 0.6, z: 1 };
+    const fresh = solveTwoBoneIK(root, 0.43, 0.51, target, pole);
+    const reused = solveTwoBoneIK(root, 0.43, 0.51, target, pole, out);
+    expect(reused).toBe(out);
+    expect(out.mid).toEqual(fresh.mid);
+    expect(out.end).toEqual(fresh.end);
+    expect(out.reached).toBe(fresh.reached);
+    const mid = out.mid;
+    solveTwoBoneIK(root, 0.43, 0.51, { x: 5, y: 0, z: 0 }, pole, out);
+    expect(out.mid).toBe(mid);
+    expect(out.reached).toBe(false);
+  });
+});

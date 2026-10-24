@@ -13,6 +13,8 @@ export interface Settings {
   version: typeof SETTINGS_VERSION;
   /** Mouse look multiplier (1 = the original feel). */
   mouseSensitivity: number;
+  /** Intensity (0..1) of the camera feel: follow lag, sprint FOV, landing dip. */
+  cameraMotion: number;
   /** Gain buses, 0..1. */
   masterVolume: number;
   sfxVolume: number;
@@ -25,6 +27,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   version: SETTINGS_VERSION,
   mouseSensitivity: 1,
+  cameraMotion: 1,
   masterVolume: 0.8,
   sfxVolume: 1,
   ambienceVolume: 0.7,
@@ -35,6 +38,7 @@ export const DEFAULT_SETTINGS: Settings = {
 /** Allowed range of each numeric field. */
 export const SETTING_RANGES = {
   mouseSensitivity: [0.25, 3],
+  cameraMotion: [0, 1],
   masterVolume: [0, 1],
   sfxVolume: [0, 1],
   ambienceVolume: [0, 1],

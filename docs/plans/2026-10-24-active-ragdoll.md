@@ -26,7 +26,7 @@ TypeScript 7, vitest 5.
 
 ## Phases
 
-### Phase 1 — Debug overlay + motorized death ragdoll with strength fade  *(in progress)*
+### Phase 1 — Debug overlay + motorized death ragdoll with strength fade  *(done — c149a10)*
 
 Deliverables:
 - Muscle layer on the 11-body ragdoll: per-axis position motors on the spherical joints and the
@@ -57,7 +57,7 @@ Acceptance:
   F4 overlay toggles cleanly; 0 console errors.
 - Procedural fallback rig and the no-Rapier path (Death clip) unchanged.
 
-### Phase 2 — Locomotion feel
+### Phase 2 — Locomotion feel  *(done)*
 
 Deliverables: velocity spring with start/stop inertia, acceleration lean and turn-in-place;
 strafe / backwards run clips (`Run_Left/Right/Back`) blended by local velocity while aiming;
@@ -67,6 +67,37 @@ springs (positional lag, sprint FOV, trauma shake).
 
 Acceptance: no foot sliding at walk/run on flat ground and slopes, visible weight on starts/stops
 and turns, aiming strafes look correct in all 8 directions; frame time unchanged within noise.
+
+Notes (as built):
+- `core/spring.ts` `SpringDamper`: exact closed-form damped spring (any zeta), framerate independent;
+  every procedural layer and the camera feel use it.
+- Directional locomotion (`animationState.ts`, `animationBlend.ts`): while the facing is locked
+  (aiming / just fired) the local move direction crossfades Walk/Run (forward) with `Run_Left`,
+  `Run_Right`, `Run_Back` (squared direction cosines, damped shares so reversals crossfade), all on
+  the shared gait phase (offsets measured from the foot bones: Run_Back 0.28, Run_Left 0.955,
+  Run_Right 0.418) with a blended stride (`STRAFE_STRIDE` 2.5 m). The strafe clips' built-in chest
+  yaw (±0.59 rad) is undone by the spine twist. Aimed movement is slower sideways (0.9) and
+  backwards (0.72) (`FOOT_TUNING`, `directionalSpeedScale`).
+- Turn in place (`turnInPlace.ts`): gameplay yaw stays exact (camera, hitbox, network); the lower
+  body lags through the Root bone (dead zone 66°, catch-up 2.6–7.5 rad/s, max twist 80°, relax a
+  >23° twist after 1.6 s, hips follow at 11/s while moving) while Abdomen/Torso/Chest twist back to
+  the facing; the turn plays a walk-cycle shuffle.
+- Body dynamics (`bodyDynamics.ts`): lean from forward acceleration (≤0.2 rad, 2 Hz, zeta 0.4: stops
+  rock back and settle forward), banking from lateral acceleration (≤0.2 rad), landing squash
+  (pelvis kick 0.6 m/s per m/s of fall, ≤0.2 m), small gait bob, breathing (deeper after
+  sprinting), weapon sway into GunHandling (support hand re-solved after it).
+- Foot IK (`locomotionPose.ts`, `legIK.ts`, `footPlacement.ts`): feet stand on `surfaceY` = terrain +
+  the drawn road / kerb / paving lift (`campus/surfaceLift.ts`, dropped kerbs included — feet no
+  longer sink 6–16 cm into roads and sidewalks), pelvis offset = min ground delta (−0.45..+0.25 m,
+  5 Hz spring), two-bone IK with the shin tip tracked in LowerLeg space (Foot bones hang off Root),
+  foot tilt to the terrain normal (≤26°), foot locking with hysteresis / drift release / 0.12 s
+  blend up to 7.5 m/s. Only within 30–35 m of the camera; fades out in the air and on death.
+- Head stabilisation removes 60 % of the head's deviation from the look direction.
+- Camera (`camera/cameraFeel.ts`): spring-follow of the focus (2.4 Hz, zeta 0.85; 6 Hz critical while
+  aiming), +6° FOV at a sprint, landing dip (≤0.15 m); scaled by the new "Movimiento de cámara"
+  setting (0 = the previous camera exactly). Yaw / pitch are never filtered.
+- Not done: offline contact curves (contacts come from the animated foot height instead), trauma
+  shake, start/stop clips.
 
 ### Phase 3 — Active ragdoll on nearby living characters
 

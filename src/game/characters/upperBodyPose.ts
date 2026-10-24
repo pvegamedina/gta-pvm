@@ -10,7 +10,7 @@
 // affected subtree's world matrices up to date for the next one.
 
 import * as THREE from "three";
-import { solveTwoBoneIK } from "./ik";
+import { solveTwoBoneIK, type TwoBoneSolution } from "./ik";
 
 export interface ArmChain {
   /** Shoulder joint (upper arm bone). */
@@ -32,6 +32,7 @@ const _w = new THREE.Vector3();
 const _mid = new THREE.Vector3();
 const _end = new THREE.Vector3();
 const _blend = new THREE.Quaternion();
+const _sol: TwoBoneSolution = { mid: { x: 0, y: 0, z: 0 }, end: { x: 0, y: 0, z: 0 }, reached: false };
 
 /** World position of `o` from its (current) world matrix. */
 export function worldPosition(o: THREE.Object3D, out: THREE.Vector3): THREE.Vector3 {
@@ -63,7 +64,7 @@ export function setBoneWorldQuaternion(bone: THREE.Object3D, q: THREE.Quaternion
 }
 
 /** Swings `bone` (shortest arc) so the direction to its child joint at `childNow` points at `childWanted`. */
-function swingBone(bone: THREE.Object3D, childNow: THREE.Vector3, childWanted: THREE.Vector3): void {
+export function swingBone(bone: THREE.Object3D, childNow: THREE.Vector3, childWanted: THREE.Vector3): void {
   worldPosition(bone, _s);
   _from.subVectors(childNow, _s);
   _to.subVectors(childWanted, _s);
@@ -83,7 +84,7 @@ export function poseArm(chain: ArmChain, target: THREE.Vector3, pole: THREE.Vect
   worldPosition(chain.wrist, _w);
   const upperLen = _s.distanceTo(_e);
   const lowerLen = _e.distanceTo(_w);
-  const sol = solveTwoBoneIK(_s, upperLen, lowerLen, target, pole);
+  const sol = solveTwoBoneIK(_s, upperLen, lowerLen, target, pole, _sol);
   swingBone(chain.upper, _e, _mid.set(sol.mid.x, sol.mid.y, sol.mid.z));
   worldPosition(chain.wrist, _w);
   swingBone(chain.lower, _w, _end.set(sol.end.x, sol.end.y, sol.end.z));

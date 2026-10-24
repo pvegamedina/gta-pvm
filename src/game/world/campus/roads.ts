@@ -40,21 +40,12 @@ import {
   zebraTexture,
   type RoadMarking,
 } from "./textures";
+import { KERB_DROP, KERB_RAMP, LIFT } from "./roadLevels";
 
-/** Heights above the terrain (m) of each layer, lowest first. */
-export const LIFT = {
-  footway: 0.035,
-  junction: 0.05,
-  road: 0.06,
-  crossing: 0.075,
-  kerbTop: 0.16,
-} as const;
+export { LIFT };
 
 /** Spacing (m) of bridge pillars. */
 const PILLAR_SPACING = 16;
-/** Dropped kerb: how far the sidewalk dips at a crossing (m) and the ramp length either side. */
-const KERB_DROP = LIFT.kerbTop - LIFT.road - 0.01;
-const KERB_RAMP = 1.2;
 /** Depth (m) of the tactile paving strip at a dropped kerb. */
 const TACTILE_DEPTH = 1.2;
 

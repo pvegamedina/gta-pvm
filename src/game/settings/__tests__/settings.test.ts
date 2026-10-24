@@ -49,6 +49,14 @@ describe("parseSettings", () => {
     expect(s.ambienceVolume).toBe(1);
   });
 
+  it("has a camera-motion intensity (0..1, full by default) that old saves without it pick up", () => {
+    expect(DEFAULT_SETTINGS.cameraMotion).toBe(1);
+    expect(parseSettings({ version: SETTINGS_VERSION, masterVolume: 0.5 }, "high").cameraMotion).toBe(1);
+    expect(parseSettings({ version: SETTINGS_VERSION, cameraMotion: 0.35 }, "high").cameraMotion).toBe(0.35);
+    expect(parseSettings({ version: SETTINGS_VERSION, cameraMotion: 4 }, "high").cameraMotion).toBe(1);
+    expect(parseSettings({ version: SETTINGS_VERSION, cameraMotion: -1 }, "high").cameraMotion).toBe(0);
+  });
+
   it("drops a payload from a different schema version", () => {
     expect(parseSettings({ version: 999, masterVolume: 0.1 }, "high")).toEqual({ ...DEFAULT_SETTINGS, preset: "high" });
   });

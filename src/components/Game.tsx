@@ -252,6 +252,11 @@ export default function Game() {
               <input id="setSens" type="range" min={0.25} max={3} step={0.05} defaultValue={1} />
               <output id="setSensVal">1.00×</output>
             </label>
+            <label className="setRow">
+              <span>Movimiento de cámara</span>
+              <input id="setCamMotion" type="range" min={0} max={100} step={1} defaultValue={100} />
+              <output id="setCamMotionVal">100%</output>
+            </label>
           </div>
           <div className="card settingsCard">
             <b>Sonido</b>

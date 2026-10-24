@@ -133,7 +133,8 @@ export function updatePeds(
     walkerPosition(p.walker, _pos);
     p.x = _pos.x;
     p.z = _pos.z;
-    if (Math.hypot(p.x - camX, p.z - camZ) > VISIBLE_R) {
+    const camDist = Math.hypot(p.x - camX, p.z - camZ);
+    if (camDist > VISIBLE_R) {
       p.mesh.group.visible = false;
       continue;
     }
@@ -168,6 +169,10 @@ export function updatePeds(
     _anim.alive = true;
     _anim.speed = p.speed * fleeMul;
     _anim.running = p.fleeT > 0;
+    // Walking-line velocity (feeds lean / banking); foot IK only near the camera.
+    _anim.vx = Math.sin(_pos.yaw) * _anim.speed;
+    _anim.vz = Math.cos(_pos.yaw) * _anim.speed;
+    _anim.cameraDistance = camDist;
     p.mesh.update(dt, _anim);
   }
 }

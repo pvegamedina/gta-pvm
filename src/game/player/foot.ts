@@ -59,7 +59,12 @@ export function resolveFoot(p: { x: number; z: number }, grid: CollisionGrid, ve
 const _move: FootMoveInput = { dirX: 0, dirZ: 0, run: false, ground: true };
 const _vel = { x: 0, z: 0 };
 
-export function updateFoot(p: PlayerState, dt: number, input: FootInput, camYaw: number, grid: CollisionGrid, vehicles: Vehicle[]): void {
+/**
+ * Advances the on-foot player one step. `facingYaw` is the locked facing while
+ * aiming / firing (sideways and backwards moves are slower, see footMotion.ts),
+ * or null when the body turns to face its motion.
+ */
+export function updateFoot(p: PlayerState, dt: number, input: FootInput, camYaw: number, grid: CollisionGrid, vehicles: Vehicle[], facingYaw: number | null = null): void {
   let mx = 0;
   let mz = 0;
   if (input.forward || input.strafe) {
@@ -73,6 +78,8 @@ export function updateFoot(p: PlayerState, dt: number, input: FootInput, camYaw:
   _move.dirZ = mz;
   _move.run = input.run;
   _move.ground = p.ground;
+  _move.facingX = facingYaw === null ? undefined : Math.sin(facingYaw);
+  _move.facingZ = facingYaw === null ? undefined : Math.cos(facingYaw);
   _vel.x = p.vx;
   _vel.z = p.vz;
   stepFootVelocity(_vel, _move, dt, _vel);

@@ -27,8 +27,9 @@ const EPS = 1e-6;
  * Solves the triangle root-mid-end with |mid-root| = `upper`,
  * |end-mid| = `lower`, end as close to `target` as possible and the bend
  * (mid) on the side of the `pole` point, in the plane of root, target and pole.
+ * Pass `out` to reuse a result object (hot paths: no allocation).
  */
-export function solveTwoBoneIK(root: Vec3, upper: number, lower: number, target: Vec3, pole: Vec3): TwoBoneSolution {
+export function solveTwoBoneIK(root: Vec3, upper: number, lower: number, target: Vec3, pole: Vec3, out?: TwoBoneSolution): TwoBoneSolution {
   // Axis root -> target (any direction when the target sits on the root).
   let ax = target.x - root.x;
   let ay = target.y - root.y;
@@ -75,8 +76,14 @@ export function solveTwoBoneIK(root: Vec3, upper: number, lower: number, target:
   // Law of cosines for the angle at the root.
   const cosA = Math.min(1, Math.max(-1, (upper * upper + dc * dc - lower * lower) / (2 * upper * dc)));
   const along = upper * cosA;
-  const out = upper * Math.sqrt(Math.max(0, 1 - cosA * cosA));
-  const mid = { x: root.x + ax * along + bx * out, y: root.y + ay * along + by * out, z: root.z + az * along + bz * out };
-  const end = reached ? { x: target.x, y: target.y, z: target.z } : { x: root.x + ax * dc, y: root.y + ay * dc, z: root.z + az * dc };
-  return { mid, end, reached };
+  const side = upper * Math.sqrt(Math.max(0, 1 - cosA * cosA));
+  const res = out ?? { mid: { x: 0, y: 0, z: 0 }, end: { x: 0, y: 0, z: 0 }, reached };
+  res.mid.x = root.x + ax * along + bx * side;
+  res.mid.y = root.y + ay * along + by * side;
+  res.mid.z = root.z + az * along + bz * side;
+  res.end.x = reached ? target.x : root.x + ax * dc;
+  res.end.y = reached ? target.y : root.y + ay * dc;
+  res.end.z = reached ? target.z : root.z + az * dc;
+  res.reached = reached;
+  return res;
 }

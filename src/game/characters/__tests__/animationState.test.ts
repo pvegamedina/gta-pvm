@@ -20,6 +20,9 @@ const DURATIONS: Record<ClipName, number> = {
   Walk: 1.33,
   Run: 0.8,
   Run_Shoot: 0.83,
+  Run_Back: 0.83,
+  Run_Left: 0.8,
+  Run_Right: 0.8,
   Death: 1.07,
   Punch_Left: 0.83,
   Punch_Right: 0.83,
@@ -78,7 +81,10 @@ describe("CharacterAnimState", () => {
     expect(s.weight("Idle_Gun")).toBeGreaterThan(0.9);
     run(s, { ...still, armed: true, aiming: true }, 1);
     expect(s.weight("Idle_Gun_Pointing")).toBeGreaterThan(0.9);
+    // Aim-walking forward uses the walk legs (the stance owns the arms), Run_Shoot once running.
     run(s, { ...still, armed: true, aiming: true, speed: 3.4 }, 1);
+    expect(s.weight("Walk") + s.weight("Run_Shoot")).toBeGreaterThan(0.9);
+    run(s, { ...still, armed: true, aiming: true, speed: 6.6 }, 1);
     expect(s.weight("Run_Shoot")).toBeGreaterThan(0.9);
   });
 
@@ -211,5 +217,74 @@ describe("AttackTimers (procedural fallback rig)", () => {
     expect(t.shooting).toBe(true);
     t.tick(SHOT_HOLD + 0.01);
     expect(t.shooting).toBe(false);
+  });
+});
+
+describe("CharacterAnimState directional locomotion (aiming / strafing)", () => {
+  const aimed = (localX: number, localZ: number, speed = 2.3): BlendInput => ({ ...still, armed: true, aiming: true, speed, localX, localZ });
+
+  it("plays the strafe and back-pedal clips by the local move direction while aiming", () => {
+    const s = new CharacterAnimState(DURATIONS);
+    run(s, aimed(1, 0), 1);
+    expect(s.weight("Run_Left")).toBeGreaterThan(0.8);
+    run(s, aimed(0, -1, 1.7), 1);
+    expect(s.weight("Run_Back")).toBeGreaterThan(0.8);
+    run(s, aimed(-1, 0), 1);
+    expect(s.weight("Run_Right")).toBeGreaterThan(0.8);
+    run(s, aimed(0, 1), 1);
+    expect(s.weight("Walk")).toBeGreaterThan(0.8);
+  });
+
+  it("splits diagonals between the forward and the side clip", () => {
+    const s = new CharacterAnimState(DURATIONS);
+    run(s, aimed(1, 1), 1.5);
+    expect(s.weight("Walk")).toBeCloseTo(s.weight("Run_Left"), 1);
+    expect(s.weight("Walk")).toBeGreaterThan(0.35);
+  });
+
+  it("ignores the direction when the body faces its motion (not aiming)", () => {
+    const s = new CharacterAnimState(DURATIONS);
+    run(s, { ...still, speed: 2.3, localX: 1, localZ: 0 }, 1);
+    expect(s.weight("Run_Left")).toBe(0);
+    expect(s.weight("Walk")).toBeGreaterThan(0.9);
+  });
+
+  it("sweeps the direction round the circle without popping", () => {
+    const s = new CharacterAnimState(DURATIONS);
+    run(s, aimed(0, 1), 1);
+    for (let a = 0; a < Math.PI * 4; a += 0.05) run(s, aimed(Math.sin(a), Math.cos(a)), DT, 0.1);
+  });
+
+  it("keeps every directional clip on the shared, offset gait phase", () => {
+    const s = new CharacterAnimState(DURATIONS);
+    run(s, aimed(1, 1), 0.77);
+    const walk = s.clipTime("Walk") / DURATIONS.Walk;
+    for (const c of ["Run_Left", "Run_Right", "Run_Back"] as const) {
+      const n = s.clipTime(c) / DURATIONS[c];
+      expect(n).toBeCloseTo((walk + GAIT_PHASE_OFFSET[c]! - GAIT_PHASE_OFFSET.Walk! + 1) % 1, 6);
+    }
+  });
+
+  it("reports the strafe clips' built-in chest yaw so the spine can face the aim", () => {
+    const s = new CharacterAnimState(DURATIONS);
+    run(s, aimed(1, 0), 1);
+    expect(s.strafeChestYaw).toBeGreaterThan(0.4);
+    run(s, aimed(-1, 0), 1.5);
+    expect(s.strafeChestYaw).toBeLessThan(-0.4);
+    run(s, still, 1.5);
+    expect(Math.abs(s.strafeChestYaw)).toBeLessThan(0.02);
+  });
+});
+
+describe("CharacterAnimState turn-in-place steps", () => {
+  it("shuffles the feet (walk cycle) while the lower body turns, idle otherwise", () => {
+    const s = new CharacterAnimState(DURATIONS);
+    run(s, { ...still, turnRate: 5 }, 0.4);
+    expect(s.weight("Walk")).toBeGreaterThan(0.2);
+    const p0 = s.gaitPhase;
+    s.update(DT, { ...still, turnRate: 5 });
+    expect(s.gaitPhase).not.toBe(p0);
+    run(s, still, 1);
+    expect(s.weight("Idle")).toBeGreaterThan(0.95);
   });
 });

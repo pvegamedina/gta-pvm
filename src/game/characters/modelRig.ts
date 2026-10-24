@@ -5,8 +5,11 @@
 // Wrist.R bone (with a spring-driven recoil kick on every shot), and an
 // invisible hitbox for castShot(). The skinned visual is exposed as
 // `ragdollRoot` so a corpse can hand its skeleton to the physics ragdoll.
-// After the mixer, characters/gunHandling.ts adds the start/stop lean and
-// the two-handed weapon stance (IK), blended by the smoothed armed/aim weights.
+// Around the mixer, characters/locomotionPose.ts adds the locomotion feel
+// (turn in place, strafe direction, lean / banking / landing springs, foot IK
+// on the drawn ground with foot locking, head stabilisation), and
+// characters/gunHandling.ts the two-handed weapon stance (IK, with sway),
+// blended by the smoothed armed/aim weights.
 // Every bone the ragdoll writes (plus the untracked Root and Hips) is reset to
 // its bind transform before each mixer update (characters/boneSnapshot.ts), so
 // a rig handed back from physics to animation never keeps a stale pose.
@@ -24,6 +27,7 @@ import { GUN_KICK_OMEGA, RecoilSpring, WEAPON_FEEL } from "../combat/recoil";
 import { GunHandling, findUpperBodyBones } from "./gunHandling";
 import { BoneTransformSnapshot, findBones } from "./boneSnapshot";
 import { RAGDOLL_WRITTEN_BONES } from "../physics/ragdoll";
+import { LocomotionPose, findLocomotionBones } from "./locomotionPose";
 
 /** GLTFLoader strips "." from node names, so the "Wrist.R" bone is named "WristR". */
 const WEAPON_SOCKET_NAMES = ["WristR", "Wrist.R"];
@@ -75,6 +79,9 @@ export function createModelRig(assets: CharacterAssets, spec: RigSpec): Characte
   // track-less Root/Hips), restored before every mixer update.
   const ragdollBind = new BoneTransformSnapshot(findBones(visual, [...RAGDOLL_WRITTEN_BONES, "Root", "Hips"]));
   ragdollBind.save();
+  // Locomotion feel layers; every bone they write is restored above or by GunHandling.
+  const locoBones = findLocomotionBones(visual);
+  const loco = locoBones ? new LocomotionPose(locoBones) : null;
 
   let weapon: WeaponId = "fists";
   let handle: WeaponMeshHandle | null = null;
@@ -101,8 +108,19 @@ export function createModelRig(assets: CharacterAssets, spec: RigSpec): Characte
       if (handle) handleBase = handle.group.position.clone();
       kick.reset();
     }
-    anim.update(dt, { speed: s.speed, armed: weapon !== "fists", aiming: s.aiming, alive: s.alive, running: s.running });
+    loco?.prepare(dt, group, s, anim.gaitPhase);
+    anim.update(dt, {
+      speed: s.speed,
+      armed: weapon !== "fists",
+      aiming: s.aiming,
+      alive: s.alive,
+      running: s.running,
+      localX: loco?.local.x,
+      localZ: loco?.local.z,
+      turnRate: loco?.turn.turnRate,
+    });
     apply();
+    loco?.applyBody(group, anim.aliveWeight, anim.strafeChestYaw);
     kick.update(dt);
     const k = kick.value;
     // Lean + two-handed stance on top of the animated pose (the mixer rewrites
@@ -115,14 +133,16 @@ export function createModelRig(assets: CharacterAssets, spec: RigSpec): Characte
         armedWeight: anim.armedWeight,
         aimWeight: anim.aimWeight,
         aimPitch: s.aimPitch ?? 0,
-        lean: s.ground ? anim.lean : 0,
+        lean: loco ? loco.lean * anim.aliveWeight : s.ground ? anim.lean : 0,
         kick: feel > 0 ? k / feel : 0,
+        sway: loco?.sway,
       });
     }
     // One-handed recoil for whatever share of the pose is still the animation.
     const k1 = k * (1 - stance);
     if (handle) handle.group.position.copy(handleBase).y -= k1 * KICK_BACK;
     if (Math.abs(k1) > 1e-4 && socket !== visual) socket.rotateZ(k1 * KICK_PITCH);
+    loco?.finish(group, s.aimPitch ?? 0, anim.aimWeight, anim.aliveWeight);
   }
 
   return {

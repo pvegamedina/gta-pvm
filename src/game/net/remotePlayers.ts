@@ -277,8 +277,12 @@ export class RemotePlayerManager {
     if (rp) rp.ping = ping;
   }
 
-  /** Interpolates + applies motion to each remote player's mesh (character or car). */
-  update(dt: number, nightF: number): void {
+  /**
+   * Interpolates + applies motion to each remote player's mesh (character or
+   * car). The camera position (XZ) limits foot IK to nearby players; their
+   * velocity (strafe clips, lean) is derived by the rig from the interpolated motion.
+   */
+  update(dt: number, nightF: number, camX = 0, camZ = 0): void {
     const now = performance.now();
     for (const rp of this.players.values()) {
       drawHealthBar(rp.healthSprite, rp.alive ? rp.health : 0);
@@ -327,6 +331,7 @@ export class RemotePlayerManager {
           aiming: motion.aiming,
           alive: rp.alive,
           aimPitch: motion.aimPitch ?? 0,
+          cameraDistance: Math.hypot(motion.p[0] - camX, motion.p[2] - camZ),
         });
       }
     }

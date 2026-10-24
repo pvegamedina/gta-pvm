@@ -2,7 +2,9 @@
 // foot, vehicles, pedestrians, camera, bullets, shell casings…). The campus
 // world installs its terrain (+ bridge decks) sampler once the map is loaded;
 // until then the ground is the flat y = 0 plane so early frames and unit tests
-// keep working. Also holds the playable world rectangle.
+// keep working. Also holds the playable world rectangle and the visual
+// surface lift (kerbs, sidewalks, asphalt drawn above the terrain) that foot
+// IK stands on.
 
 import type { MapBounds } from "../map/types";
 
@@ -11,21 +13,38 @@ export type HeightFn = (x: number, z: number, yHint?: number) => number;
 
 const FLAT: HeightFn = () => 0;
 let sampler: HeightFn = FLAT;
+/** Height of the drawn surface above the terrain (roads, kerbs, paving); visual only. */
+let lift: (x: number, z: number) => number = FLAT;
 
 /** Installs the ground height function (metres, y up) used by `groundY`. */
 export function setGroundSampler(fn: HeightFn): void {
   sampler = fn;
 }
 
+/** Installs the visual surface lift (campus/surfaceLift.ts) used by `surfaceY`. */
+export function setSurfaceLift(fn: (x: number, z: number) => number): void {
+  lift = fn;
+}
+
 /** Back to the flat ground and default bounds (tests, world disposal). */
 export function resetGround(): void {
   sampler = FLAT;
+  lift = FLAT;
   bounds = { ...DEFAULT_BOUNDS };
 }
 
 /** Ground height (m) at (x, z); pass the current height as `yHint` when known (underpasses). */
 export function groundY(x: number, z: number, yHint?: number): number {
   return sampler(x, z, yHint);
+}
+
+/**
+ * Height (m) of the visible walking surface at (x, z): the terrain plus the
+ * drawn road / sidewalk / paving layer on top of it. For visuals only (foot
+ * IK); gameplay, physics and cameras use `groundY`.
+ */
+export function surfaceY(x: number, z: number, yHint?: number): number {
+  return sampler(x, z, yHint) + lift(x, z);
 }
 
 /** Half the finite-difference span used for normals (≈ half a terrain cell). */

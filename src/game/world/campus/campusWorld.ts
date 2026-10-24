@@ -6,7 +6,8 @@
 import * as THREE from "three";
 import type { CampusMap } from "../../map/loader";
 import type { MapSpawn } from "../../map/types";
-import { setGroundSampler, setWorldBounds } from "../ground";
+import { setGroundSampler, setSurfaceLift, setWorldBounds } from "../ground";
+import { createSurfaceLift } from "./surfaceLift";
 import type { CollisionGrid } from "../colliders";
 import type { ShootableRegistry } from "../../combat/shootables";
 import type { Environment } from "../environment";
@@ -73,6 +74,7 @@ export function buildCampusWorld(
   const terrainHeight = (x: number, z: number) => meshHeightAt(t, x, z);
   const surface = createSurface(terrainHeight, map.roads);
   setGroundSampler(surface.height);
+  setSurfaceLift(createSurfaceLift(map.roads));
   setWorldBounds(map.bounds);
 
   scene.add(buildTerrainMesh(map, anisotropy));

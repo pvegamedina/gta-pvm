@@ -65,6 +65,9 @@ export interface GunHandlingInput {
   lean: number;
   /** Normalised gun kick (~1 at the peak of a full kick). */
   kick: number;
+  /** Weapon inertia (characters/bodyDynamics.ts WeaponSway): barrel yaw / pitch
+   * offsets (rad) and grip offset towards the character's left / up (m). */
+  sway?: { yaw: number; pitch: number; x: number; y: number };
 }
 
 const mix = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -228,6 +231,20 @@ export class GunHandling {
       .normalize();
     _gunUp.copy(_upP).addScaledVector(_barrel, -_upP.dot(_barrel)).normalize();
     if (st.cant !== 0) _gunUp.applyAxisAngle(_barrel, st.cant);
+    // Sway: the gun lags the view / body a little (the left hand follows below).
+    const sway = input.sway;
+    if (sway) {
+      if (sway.yaw !== 0) {
+        _barrel.applyAxisAngle(_upP, sway.yaw);
+        _gunUp.applyAxisAngle(_upP, sway.yaw);
+      }
+      if (sway.pitch !== 0) {
+        _gunRight.crossVectors(_barrel, _gunUp).normalize();
+        _barrel.applyAxisAngle(_gunRight, sway.pitch);
+        _gunUp.applyAxisAngle(_gunRight, sway.pitch);
+      }
+      _grip.addScaledVector(_left, sway.x).addScaledVector(_upP, sway.y);
+    }
     // Kick: muzzle flips up about the grip and the gun slides back.
     if (input.kick !== 0) {
       _gunRight.crossVectors(_barrel, _gunUp);

@@ -28,7 +28,7 @@ import { STEP } from "./core/constants";
 import { clamp } from "./core/math";
 
 import { CollisionGrid } from "./world/colliders";
-import { groundY, resetGround } from "./world/ground";
+import { groundY, resetGround, surfaceY } from "./world/ground";
 import { createEnvironment } from "./world/environment";
 import { drawMinimap, type MinimapDot } from "./world/minimap";
 import { buildCampusWorld, type CampusWorld } from "./world/campus/campusWorld";
@@ -367,6 +367,7 @@ export function createGame(): GameHandle {
     const presetChanged = !graphicsApplied || next.preset !== settings.preset;
     settings = next;
     mouseSens = next.mouseSensitivity;
+    cam.motion = next.cameraMotion;
     audio.setVolumes(next.masterVolume, next.sfxVolume, next.ambienceVolume);
     if (presetChanged) {
       applyGraphics(presetConfig(next.preset), { renderer, scene, camera, env });
@@ -1049,10 +1050,15 @@ export function createGame(): GameHandle {
       if (player.mode === "foot") {
         const fw = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
         const st = (keys.KeyA || keys.ArrowLeft ? 1 : 0) - (keys.KeyD || keys.ArrowRight ? 1 : 0);
-        updateFoot(player, dt, { forward: fw, strafe: st, run: !!(keys.ShiftLeft || keys.ShiftRight), jump: !!keys.Space }, cam.yaw, grid, vehicles);
         // Face the camera while aiming or firing a gun, so the gun (and the
-        // visible bullets leaving its muzzle) point where the shot goes.
-        if (player.aiming || (firingHeld && player.weapon !== "fists")) player.yaw = cam.yaw;
+        // visible bullets leaving its muzzle) point where the shot goes; moving
+        // sideways / backwards relative to that facing is slower.
+        const facingLocked = player.aiming || (firingHeld && player.weapon !== "fists");
+        updateFoot(player, dt, { forward: fw, strafe: st, run: !!(keys.ShiftLeft || keys.ShiftRight), jump: !!keys.Space }, cam.yaw, grid, vehicles, facingLocked ? cam.yaw : null);
+        if (facingLocked) {
+          player.yaw = cam.yaw;
+          player.mesh.group.rotation.y = player.yaw;
+        }
         checkVehicleHit(dt);
       } else if (player.car) {
         const input = { up: !!(keys.KeyW || keys.ArrowUp), down: !!(keys.KeyS || keys.ArrowDown), left: !!(keys.KeyA || keys.ArrowLeft), right: !!(keys.KeyD || keys.ArrowRight), handbrake: !!keys.Space };
@@ -1303,6 +1309,9 @@ export function createGame(): GameHandle {
           aiming: player.aiming,
           alive: player.alive,
           aimPitch,
+          vx: player.vx,
+          vz: player.vz,
+          vy: player.vy,
         });
       }
       env.update(dt, cam.fx, cam.fz, camera, groundY(cam.fx, cam.fz, cam.fy));
@@ -1312,7 +1321,7 @@ export function createGame(): GameHandle {
       corpses.update(dt);
       ragdollDebug.update(dt);
       effects.update(dt);
-      remotePlayers.update(dt, env.state.nightF);
+      remotePlayers.update(dt, env.state.nightF, camera.position.x, camera.position.z);
       updateHud(dt);
       updateAudioFx(dt);
       updateFootsteps(dt);
@@ -1795,7 +1804,7 @@ export function createGame(): GameHandle {
   if (debugHook) {
     (window as unknown as Record<string, unknown>).__gtaDebug = {
       engine: () => audio.engineTelemetry(),
-      player: () => ({ x: player.x, y: player.y, z: player.z, vx: player.vx, vz: player.vz, speed: footSpeed(player), mode: player.mode, aimPitch, alive: player.alive }),
+      player: () => ({ x: player.x, y: player.y, z: player.z, vx: player.vx, vz: player.vz, vy: player.vy, yaw: player.yaw, ground: player.ground, speed: footSpeed(player), mode: player.mode, aimPitch, alive: player.alive }),
       vehicles: () =>
         vehicles.map((v) => ({
           type: v.type,
@@ -1874,6 +1883,8 @@ export function createGame(): GameHandle {
         world?.facades?.update(cam.fx, cam.fz, all);
       },
       ground: (x: number, z: number) => groundY(x, z),
+      /** Height of the drawn road / sidewalk / paving above the terrain (what foot IK stands on). */
+      surfaceLift: (x: number, z: number) => surfaceY(x, z) - groundY(x, z),
       setTime: (tod: number) => {
         env.state.tod = tod;
       },

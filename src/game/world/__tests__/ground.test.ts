@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { groundY, groundNormal, setGroundSampler, resetGround, clampToWorld, setWorldBounds } from "../ground";
+import { groundY, groundNormal, setGroundSampler, resetGround, clampToWorld, setWorldBounds, setSurfaceLift, surfaceY } from "../ground";
 
 afterEach(() => resetGround());
 
@@ -23,6 +23,19 @@ describe("ground sampler", () => {
     expect(n.x).toBeCloseTo(-Math.SQRT1_2, 4);
     expect(n.y).toBeCloseTo(Math.SQRT1_2, 4);
     expect(n.z).toBeCloseTo(0, 6);
+  });
+});
+
+describe("visual surface height", () => {
+  it("is the terrain until a surface lift is installed, then terrain + lift (gameplay height unchanged)", () => {
+    setGroundSampler((x) => x * 0.1);
+    expect(surfaceY(10, 0)).toBeCloseTo(1, 9);
+    setSurfaceLift((x) => (x > 5 ? 0.16 : 0.06));
+    expect(surfaceY(10, 0)).toBeCloseTo(1.16, 9);
+    expect(surfaceY(2, 0)).toBeCloseTo(0.26, 9);
+    expect(groundY(10, 0)).toBeCloseTo(1, 9);
+    resetGround();
+    expect(surfaceY(10, 0)).toBe(0);
   });
 });
 

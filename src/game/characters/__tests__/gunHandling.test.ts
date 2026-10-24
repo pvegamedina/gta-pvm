@@ -133,6 +133,23 @@ describe("GunHandling", () => {
     expect(frame().angleTo(first)).toBeLessThan(1e-9);
   });
 
+  it("sways the gun (yaw / pitch / offset) and keeps the support hand on it", () => {
+    for (const weapon of ["m4", "pistol"] as const) {
+      const { root, holder, handling, bones } = arm(weapon, 0.3);
+      handling.apply(root, holder, input(weapon));
+      const steady = barrelOf(holder);
+      const grip0 = holder.getWorldPosition(new THREE.Vector3());
+      handling.apply(root, holder, input(weapon, { sway: { yaw: 0.05, pitch: -0.03, x: 0.015, y: -0.01 } }));
+      const swayed = barrelOf(holder);
+      expect(swayed.angleTo(steady)).toBeGreaterThan(0.03);
+      expect(swayed.angleTo(steady)).toBeLessThan(0.08);
+      expect(holder.getWorldPosition(new THREE.Vector3()).distanceTo(grip0)).toBeGreaterThan(0.005);
+      const support = holder.getObjectByName(SUPPORT_NAME)!.getWorldPosition(new THREE.Vector3());
+      const palm = new THREE.Vector3(...WEAPON_POSES[weapon].support.palm).applyMatrix4(bones.left.wrist.matrixWorld);
+      expect(palm.distanceTo(support)).toBeLessThan(0.01);
+    }
+  });
+
   it("kicks the muzzle up on a shot", () => {
     const { root, holder, handling } = arm("pistol", 0);
     handling.apply(root, holder, input("pistol", { kick: 1 }));

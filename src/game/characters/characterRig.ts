@@ -20,6 +20,14 @@ export interface RigUpdate {
   running?: boolean;
   /** Aim pitch (rad, + = up) the gun levels at while aiming; 0 when unknown. */
   aimPitch?: number;
+  /** World horizontal velocity (m/s): drives strafe clips, lean and banking.
+   * Derived from the group's motion between updates when omitted. */
+  vx?: number;
+  vz?: number;
+  /** Vertical velocity (m/s, + = up) for the landing squash; derived when omitted. */
+  vy?: number;
+  /** Distance (m) from the camera: foot IK only runs close by. Omitted = close. */
+  cameraDistance?: number;
 }
 
 export interface CharacterRig {

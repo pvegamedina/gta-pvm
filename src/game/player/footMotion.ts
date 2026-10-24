@@ -20,6 +20,10 @@ export interface FootMoveInput {
   run: boolean;
   /** Full control on the ground; AIR_CONTROL of it while airborne. */
   ground: boolean;
+  /** Locked facing (unit XZ, e.g. aiming): moving sideways / backwards relative
+   * to it is slower (directionalSpeedScale). Omit when the body faces its motion. */
+  facingX?: number;
+  facingZ?: number;
 }
 
 /** Tunables (m/s, m/s², rad). Exported so the animation thresholds can follow them. */
@@ -50,9 +54,23 @@ export const FOOT_TUNING = {
   turnSpeedKeep: 0.65,
   /** Share of acceleration/turning available while airborne (no braking at all). */
   airControl: 0.15,
+  /** Speed multipliers while the facing is locked (aiming): strafing and back-pedalling. */
+  strafeSpeedScale: 0.9,
+  backSpeedScale: 0.72,
 } as const;
 
 const T = FOOT_TUNING;
+
+/**
+ * Speed multiplier for moving along (dirX, dirZ) while facing (facingX,
+ * facingZ) (both unit XZ): 1 straight ahead, strafeSpeedScale sideways,
+ * backSpeedScale backwards, blended by the squared direction cosines.
+ */
+export function directionalSpeedScale(dirX: number, dirZ: number, facingX: number, facingZ: number): number {
+  const c = dirX * facingX + dirZ * facingZ;
+  const c2 = Math.min(1, c * c);
+  return c2 * (c >= 0 ? 1 : T.backSpeedScale) + (1 - c2) * T.strafeSpeedScale;
+}
 
 /** Moves `v` towards `target` by at most `maxDelta`. */
 function approach(v: number, target: number, maxDelta: number): number {
@@ -79,7 +97,8 @@ export function stepFootVelocity(v: FootVelocity, input: FootMoveInput, dt: numb
     if (input.ground) s = Math.max(0, s - brakeAt(s) * dt);
   } else {
     const targetHeading = Math.atan2(input.dirX, input.dirZ);
-    const maxSpeed = input.run ? T.runSpeed : T.walkSpeed;
+    const facing = input.facingX !== undefined && input.facingZ !== undefined;
+    const maxSpeed = (input.run ? T.runSpeed : T.walkSpeed) * (facing ? directionalSpeedScale(input.dirX, input.dirZ, input.facingX!, input.facingZ!) : 1);
     let delta = s < T.pivotSpeed ? 0 : angDiff(heading, targetHeading);
     if (s < T.pivotSpeed) heading = targetHeading;
 

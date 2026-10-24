@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { stepFootVelocity, FOOT_TUNING, type FootMoveInput, type FootVelocity } from "../footMotion";
+import { stepFootVelocity, directionalSpeedScale, FOOT_TUNING, type FootMoveInput, type FootVelocity } from "../footMotion";
 
 const DT = 1 / 60;
 const fwd: FootMoveInput = { dirX: 0, dirZ: 1, run: false, ground: true };
@@ -151,5 +151,27 @@ describe("stepFootVelocity", () => {
     const r = stepFootVelocity(v0, fwd, DT, out);
     expect(r).toBe(out);
     expect(v0).toEqual({ x: 0, z: 1 });
+  });
+});
+
+describe("aimed (facing-locked) movement speed by direction", () => {
+  it("scales 1 forward, strafeSpeedScale sideways and backSpeedScale backwards, continuously", () => {
+    expect(directionalSpeedScale(0, 1, 0, 1)).toBeCloseTo(1, 9);
+    expect(directionalSpeedScale(1, 0, 0, 1)).toBeCloseTo(FOOT_TUNING.strafeSpeedScale, 9);
+    expect(directionalSpeedScale(0, -1, 0, 1)).toBeCloseTo(FOOT_TUNING.backSpeedScale, 9);
+    let prev = directionalSpeedScale(0, 1, 0, 1);
+    for (let a = 0; a < Math.PI * 2; a += 0.02) {
+      const k = directionalSpeedScale(Math.sin(a), Math.cos(a), 0, 1);
+      expect(Math.abs(k - prev)).toBeLessThan(0.02);
+      prev = k;
+    }
+  });
+
+  it("caps back-pedalling while facing is locked (aiming) but not free running", () => {
+    const back: FootMoveInput = { dirX: 0, dirZ: -1, run: false, ground: true, facingX: 0, facingZ: 1 };
+    const { v } = simulate({ x: 0, z: 0 }, back, 2);
+    expect(speedOf(v)).toBeCloseTo(FOOT_TUNING.walkSpeed * FOOT_TUNING.backSpeedScale, 6);
+    const free = simulate({ x: 0, z: 0 }, { ...back, facingX: undefined, facingZ: undefined }, 2);
+    expect(speedOf(free.v)).toBeCloseTo(FOOT_TUNING.walkSpeed, 6);
   });
 });
