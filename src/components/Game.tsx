@@ -141,6 +141,8 @@ export default function Game() {
             <br />
             <kbd>H</kbd> claxon · <kbd>E</kbd> salir
             <br />
+            Mantén <kbd>H</kbd> sirena (policía)
+            <br />
             <kbd>Ratón</kbd> mirar alrededor
           </div>
           <div className="card">
@@ -204,6 +206,8 @@ export default function Game() {
             <kbd>D</kbd> girar
             <br />
             <kbd>Espacio</kbd> freno de mano · <kbd>H</kbd> claxon · <kbd>E</kbd> salir
+            <br />
+            Mantén <kbd>H</kbd> sirena (policía)
           </div>
         </div>
       </div>

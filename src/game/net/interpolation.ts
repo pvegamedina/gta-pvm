@@ -76,7 +76,7 @@ function extrapolateMotion(prev: PlayerMotion, last: PlayerMotion, spanMs: numbe
     ...(last.aimPitch !== undefined ? { aimPitch: last.aimPitch } : {}),
     car:
       last.car && prev.car
-        ? { type: last.car.type, color: last.car.color, yaw: angLerp(prev.car.yaw, last.car.yaw, t), speed: last.car.speed, steer: last.car.steer }
+        ? { ...last.car, yaw: angLerp(prev.car.yaw, last.car.yaw, t) }
         : last.car,
   };
 }
@@ -99,7 +99,14 @@ function lerpMotion(a: PlayerMotion, b: PlayerMotion, t: number): PlayerMotion {
     ...lerpAimPitch(a.aimPitch, b.aimPitch, t),
     car:
       a.car && b.car
-        ? { type: t < 0.5 ? a.car.type : b.car.type, color: a.car.color, yaw: angLerp(a.car.yaw, b.car.yaw, t), speed: a.car.speed + (b.car.speed - a.car.speed) * t, steer: a.car.steer + (b.car.steer - a.car.steer) * t }
+        ? {
+            // Discrete fields (type, flags) come from the nearer sample; colour stays the older one's.
+            ...(t < 0.5 ? a.car : b.car),
+            color: a.car.color,
+            yaw: angLerp(a.car.yaw, b.car.yaw, t),
+            speed: a.car.speed + (b.car.speed - a.car.speed) * t,
+            steer: a.car.steer + (b.car.steer - a.car.steer) * t,
+          }
         : t < 0.5
           ? a.car
           : b.car,

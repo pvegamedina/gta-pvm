@@ -94,3 +94,23 @@ describe("InterpolationBuffer aim pitch", () => {
     expect(old.sample(50 + INTERP_DELAY_MS)?.aimPitch).toBeUndefined();
   });
 });
+
+describe("InterpolationBuffer car flags", () => {
+  const car = (yaw: number, siren?: boolean) => ({ type: "police", color: 0xffffff, yaw, speed: 10, steer: 0, ...(siren === undefined ? {} : { siren, brake: siren }) });
+
+  it("carries the siren/brake flags of the nearer sample", () => {
+    const buf = new InterpolationBuffer();
+    buf.push({ ...motion(0), car: car(0, false) }, 0);
+    buf.push({ ...motion(10), car: car(0.2, true) }, 100);
+    expect(buf.sample(20 + INTERP_DELAY_MS)?.car).toMatchObject({ siren: false, brake: false });
+    expect(buf.sample(80 + INTERP_DELAY_MS)?.car).toMatchObject({ siren: true, brake: true });
+  });
+
+  it("leaves the flags out for old clients that never send them", () => {
+    const buf = new InterpolationBuffer();
+    buf.push({ ...motion(0), car: car(0) }, 0);
+    buf.push({ ...motion(10), car: car(0.2) }, 100);
+    const c = buf.sample(50 + INTERP_DELAY_MS)?.car;
+    expect(c && "siren" in c).toBe(false);
+  });
+});

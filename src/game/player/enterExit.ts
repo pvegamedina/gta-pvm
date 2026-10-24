@@ -15,7 +15,7 @@ export function nearestVehicle(p: { x: number; z: number }, vehicles: Vehicle[])
     const dz = p.z - v.z;
     if (Math.abs(dx) > 8 || Math.abs(dz) > 8) continue;
     const lx = dx * Math.cos(v.yaw) - dz * Math.sin(v.yaw);
-    const lz = dx * Math.sin(v.yaw) + dz * Math.cos(v.yaw);
+    const lz = dx * Math.sin(v.yaw) + dz * Math.cos(v.yaw) - v.spec.zc;
     const ex = Math.max(Math.abs(lx) - v.spec.W / 2, 0);
     const ez = Math.max(Math.abs(lz) - v.spec.L / 2, 0);
     const d = Math.hypot(ex, ez);
@@ -68,18 +68,20 @@ export function exitCar(player: PlayerState, grid: CollisionGrid, vehicles: Vehi
   const fz = Math.cos(v.yaw);
   const sx = Math.cos(v.yaw);
   const sz = -Math.sin(v.yaw);
-  const W = v.spec.W / 2 + 0.9;
+  // Driver's door first (catalogue side/position), then the other side, then front/back.
+  const W = (v.spec.W / 2 + 0.9) * v.spec.door.side;
   const L = v.spec.L / 2 + 1.0;
+  const dz = v.spec.door.z;
   const cands: [number, number][] = [
-    [W, 0.2],
-    [-W, 0.2],
-    [W, -1.5],
-    [-W, -1.5],
-    [0, L],
-    [0, -L],
+    [W, dz],
+    [-W, dz],
+    [W, dz - 1.7],
+    [-W, dz - 1.7],
+    [0, v.spec.zc + L],
+    [0, v.spec.zc - L],
   ];
-  let px = v.x + sx * W + fx * 0.2;
-  let pz = v.z + sz * W + fz * 0.2;
+  let px = v.x + sx * W + fx * dz;
+  let pz = v.z + sz * W + fz * dz;
   for (const c of cands) {
     const x = v.x + sx * c[0] + fx * c[1];
     const z = v.z + sz * c[0] + fz * c[1];
@@ -118,8 +120,9 @@ export function forceExitCar(player: PlayerState, grid: CollisionGrid, vehicles:
   v.mode = "parked";
   player.mode = "foot";
   player.car = null;
-  player.x = v.x + Math.cos(v.yaw) * (v.spec.W / 2 + 1);
-  player.z = v.z + -Math.sin(v.yaw) * (v.spec.W / 2 + 1);
+  const side = (v.spec.W / 2 + 1) * v.spec.door.side;
+  player.x = v.x + Math.cos(v.yaw) * side;
+  player.z = v.z + -Math.sin(v.yaw) * side;
   player.y = groundY(player.x, player.z);
   player.mesh.group.visible = true;
   resolveFoot(player, grid, vehicles);

@@ -60,7 +60,8 @@ export interface PhysicsVehicle {
   y: number;
   z: number;
   yaw: number;
-  spec: { L: number; W: number; by: number; bh: number; ch: number };
+  /** Catalogue dimensions: length, width, height and the body's centre along z. */
+  spec: { L: number; W: number; H: number; zc: number };
 }
 
 interface CarProxy {
@@ -134,10 +135,11 @@ export class PhysicsWorld {
         if (!proxy) {
           const s = v.spec;
           const bottom = 0.18;
-          const top = s.by + s.bh + s.ch * 0.85;
+          // Up to the roof (minus a little: the glasshouse is narrower than the body).
+          const top = s.H * 0.95;
           const body = this.world.createRigidBody(R.RigidBodyDesc.kinematicPositionBased().setTranslation(v.x, v.y, v.z));
           const col = R.ColliderDesc.cuboid(s.W / 2, (top - bottom) / 2, s.L / 2)
-            .setTranslation(0, (top + bottom) / 2, 0)
+            .setTranslation(0, (top + bottom) / 2, s.zc)
             .setCollisionGroups(CAR_GROUPS)
             .setFriction(0.6);
           this.world.createCollider(col, body);

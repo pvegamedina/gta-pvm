@@ -18,3 +18,17 @@ describe("parseMotion aimPitch", () => {
     expect(parseMotion({ ...base, aimPitch: Number.NaN })?.aimPitch).toBeUndefined();
   });
 });
+
+describe("parseMotion car flags", () => {
+  const car = { type: "police", color: 0xffffff, yaw: 0.5, speed: 12, steer: 0.1 };
+
+  it("keeps the optional siren and brake booleans", () => {
+    const m = parseMotion({ ...base, car: { ...car, siren: true, brake: false } });
+    expect(m?.car).toEqual({ ...car, siren: true, brake: false });
+  });
+
+  it("drops non-boolean flags and accepts cars without them (old clients)", () => {
+    expect(parseMotion({ ...base, car: { ...car, siren: "yes", brake: 1 } })?.car).toEqual(car);
+    expect(parseMotion({ ...base, car })?.car).toEqual(car);
+  });
+});

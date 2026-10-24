@@ -52,6 +52,7 @@ Abrí `http://localhost:3000` en el navegador y pulsá **Jugar**.
 | Girar | `A` `D` (en coche) |
 | Freno de mano | `Espacio` (en coche) |
 | Claxon | `H` |
+| Sirena y luces (coche de policía) | `H` (mantener) |
 | Cambiar de arma | `1` puños · `2` pistola · `3` rifle M4 · `Q` siguiente |
 | Disparar | Click izquierdo |
 | Apuntar | Click derecho |

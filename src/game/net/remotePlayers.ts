@@ -7,7 +7,7 @@
 import * as THREE from "three";
 import type { PlayerMotion, PlayerSnapshot, WeaponId } from "@shared/protocol";
 import { addVeh, removeVeh, visualVeh, type Vehicle } from "../vehicles/meshes";
-import type { VehicleTypeKey } from "../vehicles/types";
+import { resolveVehicleType } from "../vehicles/catalog";
 import { parseCharacterId, resolveCharacter } from "../characters/characterChoice";
 import type { CharacterRig, RigFactory } from "../characters/characterRig";
 import { InterpolationBuffer } from "./interpolation";
@@ -166,11 +166,20 @@ export class RemotePlayerManager {
     const rp = this.players.get(id);
     if (!rp) return;
     this.detachRig(rp);
-    if (rp.car) {
-      this.shootables.remove(rp.car.root);
-      removeVeh(this.scene, rp.car);
-    }
+    this.dropCar(rp);
     this.players.delete(id);
+  }
+
+  private dropCar(rp: RemotePlayer): void {
+    if (!rp.car) return;
+    this.shootables.remove(rp.car.hitbox);
+    removeVeh(this.scene, rp.car);
+    rp.car = null;
+  }
+
+  /** Rebuilds every remote car on its next update (e.g. once the vehicle models have loaded). */
+  refreshCars(): void {
+    for (const rp of this.players.values()) this.dropCar(rp);
   }
 
   pushMotion(id: string, motion: PlayerMotion): void {
@@ -273,14 +282,12 @@ export class RemotePlayerManager {
       if (!motion) continue;
       // Name/health sprites billboard automatically (THREE.Sprite always faces the camera).
       if (motion.car) {
-        if (!rp.car || rp.car.type !== motion.car.type) {
-          if (rp.car) {
-            this.shootables.remove(rp.car.root);
-            removeVeh(this.scene, rp.car);
-          }
-          rp.car = addVeh(this.scene, motion.car.type as VehicleTypeKey, motion.car.color, motion.p[0], motion.p[2], motion.car.yaw, "ai");
-          rp.car.ai = null;
-          this.shootables.add(rp.car.root, { kind: "remoteCar", refId: rp.id });
+        // Old clients may send legacy type strings ("van"): map them to the catalogue.
+        const type = resolveVehicleType(motion.car.type);
+        if (!rp.car || rp.car.type !== type || rp.car.color !== motion.car.color) {
+          this.dropCar(rp);
+          rp.car = addVeh(this.scene, type, motion.car.color, motion.p[0], motion.p[2], motion.car.yaw, "ai");
+          this.shootables.add(rp.car.hitbox, { kind: "remoteCar", refId: rp.id });
         }
         if (rp.rig) rp.rig.group.visible = false;
         rp.car.root.visible = true;
@@ -290,7 +297,10 @@ export class RemotePlayerManager {
         rp.car.yaw = motion.car.yaw;
         rp.car.speed = motion.car.speed;
         rp.car.steerVis = motion.car.steer;
-        visualVeh(rp.car, 0, nightF);
+        // Optional flags (absent from old clients: no siren, no brake lights).
+        rp.car.siren = motion.car.siren === true;
+        rp.car.braking = motion.car.brake === true;
+        visualVeh(rp.car, dt, nightF);
       } else {
         if (rp.car) {
           rp.car.root.visible = false;

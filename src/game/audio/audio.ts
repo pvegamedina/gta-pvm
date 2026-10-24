@@ -5,6 +5,8 @@
 // plus up to REMOTE_ENGINE_VOICES nearest remote players' cars (attenuated,
 // muffled and panned by distance), with exhaust pops, blow-off and a tyre
 // screech voice for our car. Voices are built once in init() and reused.
+// Police sirens (two-tone, audio/siren.ts) get a couple of voices of their
+// own, attenuated and panned by distance like the engines.
 // Gunshots are layered (sharp high-passed crack + pitch-dropping low thump +
 // band-passed body + short low-passed tail with a slap-back echo) through a
 // compressor bus for punch; pistol and rifle use different recipes. Remote
@@ -14,6 +16,8 @@
 import type { WeaponId } from "@shared/protocol";
 import { EngineModel, engineProfileFor, engineSoundParams, estimateThrottle, nearestVoices, type EngineSoundParams } from "./engine";
 import { EngineVoice, TireVoice } from "./engineSynth";
+import { SIREN_VOICES, nearestSirens, type SirenSource } from "./siren";
+import { SirenVoice } from "./sirenVoice";
 
 /** What the audio needs to know about a car to synthesize its engine. */
 export interface VehicleSound {
@@ -71,6 +75,8 @@ export interface AudioSystem {
    * cars (the nearest REMOTE_ENGINE_VOICES within range get a voice).
    */
   updateVehicles(dt: number, active: boolean, local: LocalVehicleSound | null, remotes: readonly RemoteVehicleSound[]): void;
+  /** Per-frame sirens (ours at distance 0): the nearest SIREN_VOICES play; `active` false fades them out. */
+  updateSirens(active: boolean, sirens: readonly SirenSource[]): void;
   /** Our engine's state (null when not driving), for the HUD and debugging. */
   engineTelemetry(): EngineTelemetry | null;
   /** Stops every voice and closes the AudioContext. */
@@ -122,6 +128,7 @@ export function createAudioSystem(): AudioSystem {
   /** Our engine model, rebuilt when we get into a different kind of car. */
   let localModel: EngineModel | null = null;
   let localKey = "";
+  const sirenVoices: SirenVoice[] = [];
   /** Gunshot bus: compressor (punch without clipping on full-auto) -> master. */
   let gunBus: GainNode | null = null;
   /** Slap-back echo send for gunshot tails. */
@@ -223,6 +230,7 @@ export function createAudioSystem(): AudioSystem {
         localVoice = new EngineVoice(ctx, engineBus, noise);
         tireVoice = new TireVoice(ctx, engineBus, noise);
         for (let i = 0; i < REMOTE_ENGINE_VOICES; i++) remoteVoices.push({ voice: new EngineVoice(ctx, engineBus, noise), id: null, model: null, prevSpeed: 0 });
+        for (let i = 0; i < SIREN_VOICES; i++) sirenVoices.push(new SirenVoice(ctx, master));
         sys.ctx = ctx;
         sys.master = master;
       } catch {
@@ -358,6 +366,21 @@ export function createAudioSystem(): AudioSystem {
       }
       for (const slot of remoteVoices) if (slot.id === null && slot.voice.last) slot.voice.update(slot.voice.last, 0);
     },
+    updateSirens(active, sirens) {
+      if (!ctx) return;
+      const on = active && sys.soundOn;
+      const chosen = nearestSirens(sirens, SIREN_VOICES);
+      for (const v of sirenVoices) if (v.id !== null && !chosen.some((c) => c.id === v.id)) v.id = null;
+      for (const s of chosen) {
+        let v = sirenVoices.find((x) => x.id === s.id);
+        if (!v) {
+          v = sirenVoices.find((x) => x.id === null)!;
+          v.assign(s.id);
+        }
+        v.update(on, s.distance, s.pan);
+      }
+      for (const v of sirenVoices) if (v.id === null) v.update(false, 0, 0);
+    },
     engineTelemetry() {
       const m = localModel;
       if (!m) return null;
@@ -377,6 +400,8 @@ export function createAudioSystem(): AudioSystem {
       tireVoice?.dispose();
       for (const slot of remoteVoices) slot.voice.dispose();
       remoteVoices.length = 0;
+      for (const v of sirenVoices) v.dispose();
+      sirenVoices.length = 0;
       localVoice = null;
       tireVoice = null;
       localModel = null;

@@ -79,10 +79,10 @@ export function updateCamera(
   if (player.mode === "car") {
     v = player.car!;
     tx = v.x;
-    ty = v.y + 1.4;
+    ty = v.y + v.spec.camera.height;
     tz = v.z;
     const spd = Math.hypot(v.vx, v.vz);
-    dist = (8.2 + Math.min(3, spd * 0.07)) * cam.zoom;
+    dist = (v.spec.camera.distance + Math.min(3, spd * 0.07)) * cam.zoom;
     pitch = cam.pitch;
     if (tClock - cam.lastMouse > 1.3 && spd > 1.5) cam.yaw = angLerp(cam.yaw, v.yaw, 1 - Math.exp(-dt * 3));
   } else {

@@ -10,10 +10,20 @@ import { groundY } from "../world/colliders";
 import { lightState } from "../world/environment";
 import type { CityState } from "../world/cityState";
 import { addVeh, type Vehicle, type TurnGeom } from "./meshes";
-import { randType, CAR_COLORS } from "./types";
+import { VEHICLE_CATALOG, pickTint, pickVehicleType } from "./catalog";
+import type { SpawnPool } from "./types";
 
 function pick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/** Livery cars (taxi, police) ignore the colour; it is still sent over the network. */
+const LIVERY_COLOR = 0xffffff;
+
+/** A random catalogue vehicle for `pool`, with a random body tint when its type takes one. */
+function addRandomVeh(scene: THREE.Scene, pool: SpawnPool, x: number, z: number, yaw: number, mode: "ai" | "parked"): Vehicle {
+  const type = pickVehicleType(Math.random, pool);
+  return addVeh(scene, type, pickTint(VEHICLE_CATALOG[type], Math.random) ?? LIVERY_COLOR, x, z, yaw, mode);
 }
 
 function decide(a: { ix: number; iz: number; dx: number; dz: number }): "S" | "L" | "R" {
@@ -165,7 +175,7 @@ export function spawnAI(scene: THREE.Scene, vehicles: Vehicle[], n: number): voi
     if (Math.hypot(x - 21, z - 10) < 25) continue;
     if (vehicles.some((v) => Math.hypot(v.x - x, v.z - z) < 12)) continue;
     const nxt = dir > 0 ? Math.floor(f) + 1 : Math.ceil(f) - 1;
-    const v = addVeh(scene, randType(), pick(CAR_COLORS), x, z, Math.atan2(dx, dz), "ai");
+    const v = addRandomVeh(scene, "traffic", x, z, Math.atan2(dx, dz), "ai");
     v.ai = {
       dx,
       dz,
@@ -192,10 +202,10 @@ export function spawnVehicles(scene: THREE.Scene, vehicles: Vehicle[], city: Cit
   vehicles.push(first);
   for (const s of city.streetSlots) {
     if (Math.hypot(s.x - 24, s.z - 7.5) < 10) continue;
-    vehicles.push(addVeh(scene, randType(), pick(CAR_COLORS), s.x + (Math.random() - 0.5) * 0.4, s.z + (Math.random() - 0.5) * 0.3, s.yaw + (Math.random() - 0.5) * 0.05, "parked"));
+    vehicles.push(addRandomVeh(scene, "parked", s.x + (Math.random() - 0.5) * 0.4, s.z + (Math.random() - 0.5) * 0.3, s.yaw + (Math.random() - 0.5) * 0.05, "parked"));
   }
   for (const s of city.lotSlots) {
-    if (Math.random() < 0.6) vehicles.push(addVeh(scene, randType(), pick(CAR_COLORS), s.x, s.z, s.yaw + (Math.random() - 0.5) * 0.05, "parked"));
+    if (Math.random() < 0.6) vehicles.push(addRandomVeh(scene, "parked", s.x, s.z, s.yaw + (Math.random() - 0.5) * 0.05, "parked"));
   }
   spawnAI(scene, vehicles, 24);
   for (const v of vehicles) {

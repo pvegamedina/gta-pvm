@@ -107,12 +107,16 @@ export const SPAWN_POINTS: SpawnPoint[] = (() => {
 
 /* ================= PLAYER STATE ================= */
 export interface CarState {
-  /** Vehicle type key on the client (sedan, hatch, suv, sport, van, taxi). */
+  /** Vehicle catalogue key (src/game/vehicles/catalog.ts); old strings such as "van" are mapped on receipt. */
   type: string;
   color: number;
   yaw: number;
   speed: number;
   steer: number;
+  /** Police light bar + siren on. Optional/additive: older clients omit it. */
+  siren?: boolean;
+  /** Brake lights on. Optional/additive: older clients omit it. */
+  brake?: boolean;
 }
 
 /** What each client streams about itself ~TICK_RATE_HZ times per second. */

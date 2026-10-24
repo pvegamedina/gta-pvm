@@ -5,6 +5,7 @@ import { clamp } from "../core/math";
 import { LIMIT } from "../core/constants";
 import { circleVsCollider, groundY, type CollisionGrid, type HitInfo } from "../world/colliders";
 import type { Vehicle } from "./meshes";
+import { pushShare } from "./catalog";
 
 export interface CarInput {
   up: boolean;
@@ -54,12 +55,13 @@ export function collideCar(v: Vehicle, grid: CollisionGrid, vehicles: Vehicle[])
             const nx = dx / d;
             const nz = dz / d;
             const pen = rs - d;
-            const sh = u.mode === "ai" ? 0.7 : 1;
+            // Moving traffic gets shoved too (heavier cars move less); parked cars stay put.
+            const sh = u.mode === "ai" ? pushShare(v.spec.mass, u.spec.mass) : 1;
             v.x += nx * pen * sh;
             v.z += nz * pen * sh;
             if (u.mode === "ai") {
-              u.x -= nx * pen * 0.3;
-              u.z -= nz * pen * 0.3;
+              u.x -= nx * pen * (1 - sh);
+              u.z -= nz * pen * (1 - sh);
             }
             const vn = v.vx * nx + v.vz * nz;
             if (vn < 0) {
@@ -99,15 +101,16 @@ export function updatePlayerCar(v: Vehicle, dt: number, input: CarInput, grid: C
   if (up) {
     if (vF >= -0.3) vF += sp.acc * (1 - Math.max(vF, 0) / sp.max) * dt;
     else {
-      vF += 24 * dt;
+      // Throttle while rolling backwards brakes first (slightly softer than the service brake).
+      vF += sp.brake * 0.92 * dt;
       v.braking = true;
     }
   }
   if (down) {
     if (vF > 0.5) {
-      vF -= 26 * dt;
+      vF -= sp.brake * dt;
       v.braking = true;
-    } else if (vF > -9) vF -= 7 * dt;
+    } else if (vF > -sp.reverseMax) vF -= sp.reverseAcc * dt;
   }
   if (hb) {
     const m = Math.min(Math.abs(vF), 16 * dt);
@@ -119,9 +122,9 @@ export function updatePlayerCar(v: Vehicle, dt: number, input: CarInput, grid: C
     vF -= Math.sign(vF) * m;
   }
   const sf = clamp(Math.abs(vF) / sp.max, 0, 1);
-  const maxSteer = (0.62 - (0.62 - 0.16) * Math.pow(sf, 0.7));
+  const maxSteer = sp.steerLock - (sp.steerLock - sp.steerLockFast) * Math.pow(sf, 0.7);
   const target = ((left ? 1 : 0) - (right ? 1 : 0)) * maxSteer;
-  const rate = target === 0 ? 5 : 3.2;
+  const rate = target === 0 ? sp.steerReturn : sp.steerRate;
   v.steer += clamp(target - v.steer, -rate * dt, rate * dt);
   let yawRate = (vF / sp.wb) * Math.tan(v.steer);
   if (hb) yawRate *= 1.6;

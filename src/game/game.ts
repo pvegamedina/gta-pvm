@@ -31,7 +31,11 @@ import { buildSignals } from "./world/signals";
 import { buildStreet, buildScenery } from "./world/street";
 import { buildMapTexture, drawMinimap, type MinimapDot } from "./world/minimap";
 
-import { visualVeh, removeVeh, type Vehicle } from "./vehicles/meshes";
+import { addVeh, visualVeh, removeVeh, type Vehicle } from "./vehicles/meshes";
+import { loadVehicleAssets } from "./vehicles/vehicleAssets";
+import { resolveVehicleType } from "./vehicles/catalog";
+import { sirenFlash } from "./vehicles/animation";
+import { HoldKey } from "./core/holdKey";
 import { spawnVehicles, updateAI } from "./vehicles/traffic";
 import { updatePlayerCar } from "./vehicles/playerCar";
 
@@ -45,6 +49,7 @@ import { spawnPeds, updatePeds, hitPed, spookPedsNear, pedPosition, pedVelocity,
 import { createCameraState, snapCamera, updateCamera, cameraRight } from "./camera/camera";
 import { createAudioSystem, type LocalVehicleSound, type RemoteVehicleSound } from "./audio/audio";
 import { engineProfileFor } from "./audio/engine";
+import type { SirenSource } from "./audio/siren";
 
 import { tickWeapon, tryFire, tryMelee, startReload, nextWeapon, totalSpread } from "./combat/weapons";
 import { applyDamage, tickRegen, respawn as respawnHealth, vehicleHitDamage, crashDamage, VEHICLE_HIT_SPEED_THRESHOLD } from "./combat/health";
@@ -173,9 +178,22 @@ export function createGame(): GameHandle {
   buildScenery(scene);
   const mapTexture = buildMapTexture();
 
+  // Vehicles spawn once their models are loaded (Boot below) and on every reset.
   const vehicles: Vehicle[] = [];
-  spawnVehicles(scene, vehicles, city);
-  for (const v of vehicles) shootables.add(v.root, { kind: "vehicle", refId: v });
+  function respawnVehicles(): void {
+    for (const v of vehicles) {
+      shootables.remove(v.hitbox);
+      removeVeh(scene, v);
+    }
+    vehicles.length = 0;
+    spawnVehicles(scene, vehicles, city);
+    for (const v of vehicles) shootables.add(v.hitbox, { kind: "vehicle", refId: v });
+  }
+  /** Long press of H in a car with a light bar toggles it and the siren (a tap is the horn). */
+  const hornKey = new HoldKey(0.45);
+  /** Red/blue light thrown around by the nearest flashing light bar (night especially). */
+  const sirenLight = new THREE.PointLight(0xff2020, 0, 26, 1);
+  scene.add(sirenLight);
 
   // ---------------- Characters ----------------
   // Character models load asynchronously (see Boot below). Until then rigs are
@@ -281,7 +299,7 @@ export function createGame(): GameHandle {
       aiming: player.aiming,
       aimPitch: Math.round(aimPitch * 1000) / 1000,
       car: player.car
-        ? { type: player.car.type, color: player.car.color, yaw: player.car.yaw, speed: player.car.speed, steer: player.car.steerVis }
+        ? { type: player.car.type, color: player.car.color, yaw: player.car.yaw, speed: player.car.speed, steer: player.car.steerVis, siren: player.car.siren, brake: player.car.braking }
         : null,
     };
   }
@@ -575,16 +593,15 @@ export function createGame(): GameHandle {
     deathAt = null;
     hud.hideDeathOverlay();
     env.state.tod = 9.5;
-    for (const v of vehicles) removeVeh(scene, v);
-    vehicles.length = 0;
-    spawnVehicles(scene, vehicles, city);
-    for (const v of vehicles) shootables.add(v.root, { kind: "vehicle", refId: v });
+    respawnVehicles();
     respawnPeds();
     player.mesh.group.position.set(player.x, player.y, player.z);
     player.mesh.group.rotation.set(0, player.yaw, 0);
     cam.yaw = player.yaw;
     cam.pitch = 0.3;
     env.carSpot.intensity = 0;
+    sirenLight.intensity = 0;
+    hornKey.cancel();
     snapCamera(cam, player);
     hud.setMode("A PIE", false);
   }
@@ -614,6 +631,7 @@ export function createGame(): GameHandle {
     $("pause")?.classList.remove("hidden");
     refreshPickers();
     for (const k in keys) keys[k] = false;
+    hornKey.cancel();
     if (document.exitPointerLock) document.exitPointerLock();
   }
 
@@ -732,6 +750,7 @@ export function createGame(): GameHandle {
   const onResize = () => resize();
   const onBlur = () => {
     for (const k in keys) keys[k] = false;
+    hornKey.cancel();
     firingHeld = false;
     aimingHeld = false;
   };
@@ -769,7 +788,10 @@ export function createGame(): GameHandle {
     keys[e.code] = true;
     if (e.repeat) return;
     if (e.code === "KeyE") interact();
-    else if (e.code === "KeyH" && player.mode === "car") audio.horn();
+    else if (e.code === "KeyH" && player.mode === "car") {
+      audio.horn();
+      hornKey.press(performance.now() / 1000);
+    }
     else if (e.code === "KeyN") {
       env.advanceHours(6);
       toast("Hora: " + Math.floor(env.state.tod) + ":00");
@@ -781,6 +803,7 @@ export function createGame(): GameHandle {
   };
   const onKeyUp = (e: KeyboardEvent) => {
     keys[e.code] = false;
+    if (e.code === "KeyH") hornKey.release(performance.now() / 1000);
     if (e.code === "Tab") hud.setScoreboardVisible(false);
   };
   const onMouseDown = (e: MouseEvent) => {
@@ -907,9 +930,10 @@ export function createGame(): GameHandle {
     for (const v of vehicles) if (v.mode === "ai") updateAI(v, dt, vehicles, env.state.tod, player);
     updatePeds(scene, peds, dt, vehicles, player, cam.fx, cam.fz);
     for (const v of vehicles) {
-      if (v.mode === "parked") continue;
+      if (v.mode === "parked" && v.visual.settled) continue;
       visualVeh(v, dt, env.state.nightF);
     }
+    if (hornKey.update(performance.now() / 1000)) toggleSiren();
     // Ragdoll physics (only steps while corpses exist): cars are kinematic pushers.
     remoteCars.length = 0;
     for (const rp of remotePlayers.all()) if (rp.car && rp.car.root.visible) remoteCars.push(rp.car);
@@ -920,6 +944,44 @@ export function createGame(): GameHandle {
       env.carSpot.target.position.set(v.x + Math.sin(v.yaw) * 25, 0, v.z + Math.cos(v.yaw) * 25);
       env.carSpot.intensity = env.state.nightF * 1.6;
     }
+    updateSirenLight();
+  }
+
+  function toggleSiren(): void {
+    const car = player.mode === "car" ? player.car : null;
+    if (!car || !car.spec.siren) return;
+    car.siren = !car.siren;
+    toast(car.siren ? "Sirena activada" : "Sirena desactivada");
+  }
+
+  /** Every flashing light bar: ours (or parked local ones) and remote players' police cars. */
+  function forEachSiren(fn: (v: Vehicle, id: string) => void): void {
+    vehicles.forEach((v, i) => {
+      if (v.siren && v.spec.siren) fn(v, `veh:${i}`);
+    });
+    for (const rp of remotePlayers.all()) if (rp.car && rp.car.root.visible && rp.car.siren && rp.car.spec.siren) fn(rp.car, rp.id);
+  }
+
+  /** Puts the shared siren light over the flashing car nearest the camera, coloured by the bar pattern. */
+  function updateSirenLight(): void {
+    let best: Vehicle | null = null;
+    let bd = Infinity;
+    forEachSiren((v) => {
+      const d = Math.hypot(v.x - cam.fx, v.z - cam.fz);
+      if (d < bd) {
+        bd = d;
+        best = v;
+      }
+    });
+    const v = best as Vehicle | null;
+    if (!v || bd > 120) {
+      sirenLight.intensity = 0;
+      return;
+    }
+    const f = sirenFlash(v.sirenT);
+    sirenLight.position.set(v.x, v.y + v.spec.H + 0.6, v.z);
+    sirenLight.color.setHex(f.red ? 0xff2020 : 0x2050ff);
+    sirenLight.intensity = f.red || f.blue ? 1.2 + env.state.nightF * 3 : 0;
   }
 
   function checkVehicleHit(dt: number): void {
@@ -1089,13 +1151,14 @@ export function createGame(): GameHandle {
   /** Reused per-frame vehicle audio inputs (no garbage per frame for our car). */
   const localSound: LocalVehicleSound = { type: "sedan", topSpeed: 40, wheelRadius: 0.36, speed: 0, throttle: 0, slip: 0 };
   const remoteSounds: RemoteVehicleSound[] = [];
+  const sirenSounds: SirenSource[] = [];
 
   function updateAudioFx(dt: number): void {
     const car = player.mode === "car" && player.alive ? player.car : null;
     if (car) {
       const fwd = !!(keys.KeyW || keys.ArrowUp);
       const back = !!(keys.KeyS || keys.ArrowDown);
-      localSound.type = car.type;
+      localSound.type = car.spec.engine;
       localSound.topSpeed = car.spec.max;
       localSound.wheelRadius = car.spec.wr;
       localSound.speed = car.speed;
@@ -1115,9 +1178,17 @@ export function createGame(): GameHandle {
       const dx = v.x - camera.position.x;
       const dz = v.z - camera.position.z;
       const d = Math.hypot(dx, dz);
-      remoteSounds.push({ id: rp.id, type: v.type, topSpeed: v.spec.max, wheelRadius: v.spec.wr, speed: v.speed, distance: d, pan: d > 0.1 ? ((dx * right.x + dz * right.z) / d) * 0.8 : 0 });
+      remoteSounds.push({ id: rp.id, type: v.spec.engine, topSpeed: v.spec.max, wheelRadius: v.spec.wr, speed: v.speed, distance: d, pan: d > 0.1 ? ((dx * right.x + dz * right.z) / d) * 0.8 : 0 });
     }
     audio.updateVehicles(dt, playing && !paused, car ? localSound : null, remoteSounds);
+    sirenSounds.length = 0;
+    forEachSiren((v, id) => {
+      const dx = v.x - camera.position.x;
+      const dz = v.z - camera.position.z;
+      const d = v === car ? 0 : Math.hypot(dx, dz);
+      sirenSounds.push({ id, distance: d, pan: d > 0.1 ? ((dx * right.x + dz * right.z) / d) * 0.8 : 0 });
+    });
+    audio.updateSirens(playing && !paused, sirenSounds);
   }
 
   const dots: MinimapDot[] = [];
@@ -1128,7 +1199,10 @@ export function createGame(): GameHandle {
     const car = player.mode === "car" ? player.car : null;
     hud.setMode(car ? "CONDUCIENDO · " + car.spec.name.toUpperCase() : "A PIE", !!car);
     let pr = "";
-    if (car) pr = Math.abs(car.speed) > 6 ? "Frena para poder salir (E)" : "Pulsa E para salir del vehículo";
+    if (car) {
+      pr = Math.abs(car.speed) > 6 ? "Frena para poder salir (E)" : "Pulsa E para salir del vehículo";
+      if (car.spec.siren) pr += " · Mantén H: sirena";
+    }
     else {
       const v = nearestVehicle(player, vehicles);
       if (v) pr = "Pulsa E para entrar · " + v.spec.name;
@@ -1161,7 +1235,8 @@ export function createGame(): GameHandle {
     for (const v of vehicles) {
       if (v.mode === "player") continue;
       if (Math.abs(v.x - cam.fx) > 130 || Math.abs(v.z - cam.fz) > 130) continue;
-      dots.push({ x: v.x, z: v.z, color: v.mode === "ai" ? "#ffb347" : "#c9d1d9", r: v.mode === "ai" ? 3.6 : 2.6 });
+      const color = v.spec.siren ? (v.siren && sirenFlash(v.sirenT).blue ? "#4d7dff" : "#ff5a5a") : v.mode === "ai" ? "#ffb347" : "#c9d1d9";
+      dots.push({ x: v.x, z: v.z, color, r: v.mode === "ai" ? 3.6 : 2.6 });
     }
     for (const rp of remotePlayers.all()) {
       const m = rp.lastMotion;
@@ -1250,8 +1325,12 @@ export function createGame(): GameHandle {
       console.warn("[assets] character models failed to load, using procedural humans", err);
       return proceduralRigFactory;
     });
+  // Vehicle models load in parallel too; a failure keeps the procedural box stand-ins.
+  const vehiclesReady = loadVehicleAssets().catch((err: unknown) => {
+    console.warn("[assets] vehicle models failed to load, using procedural cars", err);
+  });
   // Rapier loads in parallel; a failure (null) keeps animated, non-physical corpses.
-  Promise.all([factoryReady, loadRapier()])
+  Promise.all([factoryReady, loadRapier(), vehiclesReady])
     .then(([factory, R]) => {
       if (disposed) return;
       if (R) {
@@ -1270,6 +1349,8 @@ export function createGame(): GameHandle {
       rebuildPlayerRig();
       remotePlayers.setRigFactory(factory);
       respawnPeds();
+      respawnVehicles();
+      remotePlayers.refreshCars();
       setPlayLoading(false);
       initCharacterPicker();
     });
@@ -1280,6 +1361,17 @@ export function createGame(): GameHandle {
     (window as unknown as Record<string, unknown>).__gtaDebug = {
       engine: () => audio.engineTelemetry(),
       player: () => ({ x: player.x, z: player.z, vx: player.vx, vz: player.vz, speed: footSpeed(player), mode: player.mode, aimPitch }),
+      vehicles: () =>
+        vehicles.map((v) => ({ type: v.type, x: v.x, z: v.z, yaw: v.yaw, mode: v.mode, speed: v.speed, siren: v.siren, sirenT: v.sirenT, fallback: v.visual.fallback, lit: { ...v.visual.lit } })),
+      /** Dev-only staging for visual checks: drops a parked car (catalogue or legacy type) at a spot. */
+      spawnVehicle: (type: string, x: number, z: number, yaw: number, color = 0x2f6fd6) => {
+        const v = addVeh(scene, resolveVehicleType(type), color, x, z, yaw, "parked");
+        v.y = groundY(x, z);
+        visualVeh(v, 0, env.state.nightF);
+        vehicles.push(v);
+        shootables.add(v.hitbox, { kind: "vehicle", refId: v });
+        return vehicles.length - 1;
+      },
     };
   }
 

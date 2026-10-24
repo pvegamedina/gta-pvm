@@ -1,50 +1,96 @@
-// Vehicle type specs (dimensions, performance) — matches shared/protocol CarState.type.
+// Vehicle type definitions shared by the catalogue (catalog.ts), the renderer
+// (meshes.ts / vehicleAssets.ts), the physics proxies and the network layer.
+// Pure types only — the data lives in catalog.ts.
 
-export interface VehicleSpec {
-  name: string;
-  L: number;
-  W: number;
-  bh: number;
-  by: number;
-  cl: number;
-  ch: number;
-  cz: number;
-  slope: number;
-  max: number;
-  acc: number;
-  wb: number;
-  wr: number;
-  spoiler?: boolean;
-  cargo?: { l: number; h: number };
-  sign?: boolean;
-  rad: number;
-  offs: [number, number, number];
+/** Who drives a vehicle: the local player, traffic AI, or nobody. */
+export type VehicleMode = "player" | "ai" | "parked";
+
+/** Catalogue keys. They travel over the network as `CarState.type` (see resolveVehicleType for old strings). */
+export type VehicleTypeKey = "sedan" | "hatch" | "suv" | "sport" | "coupe" | "taxi" | "police";
+
+export type Vec3Tuple = readonly [number, number, number];
+
+/**
+ * Measurements of a GLB in its own model space (metres before `scale`),
+ * taken from the node transforms + accessor bounds (see the Phase 2 report):
+ * +z is forward, +x is the car's left, y is up.
+ */
+export interface ModelGeometry {
+  /** Bounds of the body node. */
+  body: { min: Vec3Tuple; max: Vec3Tuple };
+  /** Wheel centres on the z axis (front and rear axle) and their radius. */
+  frontAxleZ: number;
+  rearAxleZ: number;
+  wheelRadius: number;
+  /** Lowest point of the wheels (the model is lifted so this touches the ground). */
+  wheelBottom: number;
 }
 
-export type VehicleTypeKey = "sedan" | "hatch" | "suv" | "sport" | "van" | "taxi";
+/** A body material re-coloured per instance (normal cars); `shade` darkens secondary paint (two-tone bodies). */
+export interface PaintSlot {
+  material: string;
+  shade?: number;
+}
 
-const RAW: Record<VehicleTypeKey, Omit<VehicleSpec, "rad" | "offs">> = {
-  sedan: { name: "Sedán", L: 4.5, W: 1.85, bh: 0.62, by: 0.4, cl: 2.3, ch: 0.58, cz: -0.15, slope: 0.55, max: 40, acc: 11, wb: 2.7, wr: 0.36 },
-  hatch: { name: "Utilitario", L: 3.8, W: 1.72, bh: 0.6, by: 0.4, cl: 2.1, ch: 0.62, cz: -0.3, slope: 0.35, max: 35, acc: 10, wb: 2.4, wr: 0.34 },
-  suv: { name: "SUV", L: 4.7, W: 1.95, bh: 0.85, by: 0.5, cl: 2.9, ch: 0.68, cz: -0.4, slope: 0.35, max: 37, acc: 10, wb: 2.8, wr: 0.42 },
-  sport: { name: "Deportivo", L: 4.4, W: 1.95, bh: 0.5, by: 0.34, cl: 1.7, ch: 0.48, cz: -0.2, slope: 0.8, max: 54, acc: 17, wb: 2.6, wr: 0.35, spoiler: true },
-  van: { name: "Furgoneta", L: 5.2, W: 2.0, bh: 0.9, by: 0.45, cl: 1.5, ch: 0.75, cz: 1.5, slope: 0.4, max: 32, acc: 8, wb: 3.2, wr: 0.4, cargo: { l: 3.2, h: 1.15 } },
-  taxi: { name: "Taxi", L: 4.5, W: 1.85, bh: 0.62, by: 0.4, cl: 2.3, ch: 0.58, cz: -0.15, slope: 0.55, max: 40, acc: 11, wb: 2.7, wr: 0.36, sign: true },
-};
+export interface VehicleModel {
+  /** Public URL of the meshopt-compressed GLB. */
+  file: string;
+  /** Uniform scale from model units to game metres. */
+  scale: number;
+  geometry: ModelGeometry;
+  /** Material names that take the body tint (empty for liveries). */
+  paint: readonly PaintSlot[];
+  /**
+   * Roof light bar: triangles of the light materials above this model-space
+   * height belong to the bar (flashing), the rest are ordinary tail lights.
+   */
+  lightBar?: { minY: number };
+}
 
-export const TYPES: Record<VehicleTypeKey, VehicleSpec> = Object.fromEntries(
-  Object.entries(RAW).map(([k, s]) => {
-    const rad = s.W / 2 + 0.03;
-    const o = s.L / 2 - rad - 0.03;
-    return [k, { ...s, rad, offs: [-o, 0, o] as [number, number, number] }];
-  }),
-) as Record<VehicleTypeKey, VehicleSpec>;
+/** Pool a spawn draws from: moving traffic or parking slots. */
+export type SpawnPool = "traffic" | "parked";
 
-export const VEHICLE_TYPE_KEYS = Object.keys(TYPES) as VehicleTypeKey[];
-
-export const CAR_COLORS = [0xc0392b, 0x2980b9, 0x27ae60, 0xecf0f1, 0x2c3e50, 0x7f8c8d, 0xe67e22, 0x8e44ad, 0x1a1a1a, 0xd0d0d0, 0x16a085, 0xb03060];
-
-export function randType(): VehicleTypeKey {
-  const r = Math.random();
-  return r < 0.3 ? "sedan" : r < 0.55 ? "hatch" : r < 0.75 ? "suv" : r < 0.85 ? "sport" : r < 0.95 ? "van" : "taxi";
+/** Everything gameplay, rendering, audio and physics need to know about one vehicle type. */
+export interface VehicleSpec {
+  key: VehicleTypeKey;
+  /** Player-facing name (HUD). */
+  name: string;
+  model: VehicleModel;
+  /** Real dimensions (m): length, width, height above the ground, and the body's centre along z. */
+  L: number;
+  W: number;
+  H: number;
+  zc: number;
+  /** Wheel radius and wheelbase (m). */
+  wr: number;
+  wb: number;
+  /** Mass (kg): weights car-vs-car separation. */
+  mass: number;
+  /** Top speed (m/s), throttle acceleration and service-brake deceleration (m/s²). */
+  max: number;
+  acc: number;
+  brake: number;
+  /** Reverse: top speed (m/s) and acceleration (m/s²). */
+  reverseMax: number;
+  reverseAcc: number;
+  /** Steering lock (rad) at standstill and at top speed, steer-in and self-centring rates (rad/s). */
+  steerLock: number;
+  steerLockFast: number;
+  steerRate: number;
+  steerReturn: number;
+  /** Engine profile key (audio/engine.ts ENGINE_PROFILES). */
+  engine: string;
+  /** Collision circles: radius and their centres along the car's z axis (CollisionGrid + car-vs-car). */
+  rad: number;
+  offs: readonly number[];
+  /** Exit door: side (+1 = left, the driver's side in Spain) and position along z. */
+  door: { side: 1 | -1; z: number };
+  /** Chase camera: look-at height above the car and base distance. */
+  camera: { height: number; distance: number };
+  /** Body colours to pick from, or null to keep the model's livery. */
+  tint: readonly number[] | null;
+  /** Relative spawn weights. */
+  spawn: Record<SpawnPool, number>;
+  /** Has a light bar + siren (toggled with a long press of H). */
+  siren: boolean;
 }

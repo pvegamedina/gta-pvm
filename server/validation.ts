@@ -51,7 +51,11 @@ function parseCar(v: unknown): CarState | null | undefined {
   const { type, color, yaw, speed, steer } = v;
   if (typeof type !== "string" || type.length > 24) return undefined;
   if (!saneColor(color) || ![yaw, speed, steer].every(sane)) return undefined;
-  return { type, color: color as number, yaw: yaw as number, speed: speed as number, steer: steer as number };
+  const car: CarState = { type, color: color as number, yaw: yaw as number, speed: speed as number, steer: steer as number };
+  // Optional flags (newer clients): kept only when they are real booleans.
+  if (typeof v.siren === "boolean") car.siren = v.siren;
+  if (typeof v.brake === "boolean") car.brake = v.brake;
+  return car;
 }
 
 /** Returns a sanitized motion or null when the payload is malformed. */
