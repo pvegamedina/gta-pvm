@@ -7,6 +7,7 @@ import {
   SESSION_REPLACED_MESSAGE,
   SPAWN_POINTS,
   WEAPONS,
+  characterForColor,
   type ClientMessage,
   type DamageCause,
   type PlayerMotion,
@@ -20,6 +21,7 @@ import {
   isRecord,
   isValidSessionId,
   isWeaponId,
+  parseCharacter,
   parseMotion,
   parseVec3,
   sanitizeName,
@@ -38,8 +40,15 @@ export interface RoomDeps {
 }
 
 interface Player extends PlayerSnapshot {
+  character: string;
   lastShotAt: Record<string, number>;
+  /** Times (ms) of recently accepted setCharacter changes (rate-limit window). */
+  characterChanges: number[];
 }
+
+/** At most this many character changes per rolling window (spam guard). */
+const CHARACTER_CHANGE_LIMIT = 4;
+const CHARACTER_CHANGE_WINDOW_MS = 1000;
 
 /** Fraction of damage taken while inside a vehicle. */
 const CAR_DAMAGE_FACTOR = 0.6;
@@ -94,7 +103,7 @@ export class GameRoom {
 
   handle(id: string, msg: ClientMessage): void {
     if (!this.connected.has(id) || !isRecord(msg)) return;
-    if (msg.t === "hello") return this.onHello(id, msg.name, msg.sessionId);
+    if (msg.t === "hello") return this.onHello(id, msg.name, msg.sessionId, msg.character);
     const player = this.players.get(id);
     if (!player) return;
     switch (msg.t) {
@@ -103,6 +112,7 @@ export class GameRoom {
       case "ram": return this.onRam(player, msg);
       case "selfDamage": return this.onSelfDamage(player, msg.amount, msg.cause);
       case "ping": return this.onPing(id, msg.ts);
+      case "setCharacter": return this.onSetCharacter(player, msg.character);
     }
   }
 
@@ -131,7 +141,7 @@ export class GameRoom {
     this.playerSessionId.set(id, sessionId);
   }
 
-  private onHello(id: string, rawName: unknown, rawSessionId: unknown): void {
+  private onHello(id: string, rawName: unknown, rawSessionId: unknown, rawCharacter?: unknown): void {
     if (this.players.has(id)) return;
     if (this.players.size >= MAX_PLAYERS) {
       this.deps.send(id, { t: "error", message: "Servidor lleno" });
@@ -139,16 +149,20 @@ export class GameRoom {
     }
     if (isValidSessionId(rawSessionId)) this.claimSession(id, rawSessionId);
     this.joinCounter++;
+    const color = this.randomColor();
     const player: Player = {
       id,
       name: sanitizeName(rawName, `Jugador ${this.joinCounter}`),
-      color: this.randomColor(),
+      color,
       health: MAX_HEALTH,
       alive: true,
       kills: 0,
       deaths: 0,
       motion: null,
+      // An explicit (valid) choice wins; otherwise the colour-derived default.
+      character: parseCharacter(rawCharacter) ?? characterForColor(color),
       lastShotAt: {},
+      characterChanges: [],
     };
     this.players.set(id, player);
     this.deps.send(id, {
@@ -158,6 +172,18 @@ export class GameRoom {
       spawn: this.pickSpawn(),
     });
     this.deps.broadcast({ t: "playerJoined", player: snapshot(player) }, id);
+  }
+
+  /** Validated, rate-limited character change, broadcast to the other clients. */
+  private onSetCharacter(player: Player, raw: unknown): void {
+    const character = parseCharacter(raw);
+    if (!character || character === player.character) return;
+    const now = this.deps.now();
+    player.characterChanges = player.characterChanges.filter((t) => now - t < CHARACTER_CHANGE_WINDOW_MS);
+    if (player.characterChanges.length >= CHARACTER_CHANGE_LIMIT) return;
+    player.characterChanges.push(now);
+    player.character = character;
+    this.deps.broadcast({ t: "characterChanged", id: player.id, character }, player.id);
   }
 
   private onState(player: Player, raw: unknown): void {
@@ -285,8 +311,8 @@ export class GameRoom {
 }
 
 function snapshot(p: Player): PlayerSnapshot {
-  const { id, name, color, health, alive, kills, deaths, motion } = p;
-  return { id, name, color, health, alive, kills, deaths, motion };
+  const { id, name, color, health, alive, kills, deaths, motion, character } = p;
+  return { id, name, color, health, alive, kills, deaths, motion, character };
 }
 
 function distance(a: readonly number[], b: readonly number[]): number {

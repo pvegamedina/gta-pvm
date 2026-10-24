@@ -5,6 +5,8 @@ import {
   MAX_PLAYERS,
   RESPAWN_DELAY_MS,
   WEAPONS,
+  CHARACTER_IDS,
+  characterForColor,
   type ClientMessage,
   type PlayerMotion,
   type ServerMessage,
@@ -351,5 +353,67 @@ describe("GameRoom", () => {
     c.room.join("a");
     c.room.leave("a");
     expect(c.bcast("playerLeft")).toHaveLength(0);
+  });
+
+  describe("character selection", () => {
+    const welcomeOf = (id: string) => c.sentTo(id, "welcome")[0] as Extract<ServerMessage, { t: "welcome" }>;
+
+    it("stores a valid chosen character and shares it in welcome/playerJoined", () => {
+      c.room.join("a");
+      c.room.handle("a", { t: "hello", name: "Ana", character: "swat" });
+      expect(welcomeOf("a").players.find((p) => p.id === "a")?.character).toBe("swat");
+      const joined = c.bcast("playerJoined")[0].msg as Extract<ServerMessage, { t: "playerJoined" }>;
+      expect(joined.player.character).toBe("swat");
+      c.room.join("b");
+      c.room.handle("b", { t: "hello", name: "Beto" });
+      expect(welcomeOf("b").players.find((p) => p.id === "a")?.character).toBe("swat");
+    });
+
+    it("falls back to the colour-derived character for invalid or missing choices", () => {
+      c.room.join("a");
+      c.room.handle("a", { t: "hello", name: "Ana", character: "dragon" });
+      const a = welcomeOf("a").players.find((p) => p.id === "a")!;
+      expect(a.character).toBe(characterForColor(a.color));
+      c.room.join("b");
+      c.room.handle("b", { t: "hello", name: "Beto" }); // old client: no field
+      const b = welcomeOf("b").players.find((p) => p.id === "b")!;
+      expect(CHARACTER_IDS).toContain(b.character);
+      expect(b.character).toBe(characterForColor(b.color));
+    });
+
+    it("broadcasts characterChanged on a valid change and ignores invalid ones", () => {
+      joinPlayer(c, "a");
+      c.room.handle("a", { t: "setCharacter", character: "punk" });
+      const changed = c.bcast("characterChanged");
+      expect(changed).toHaveLength(1);
+      expect(changed[0].msg).toEqual({ t: "characterChanged", id: "a", character: "punk" });
+      c.room.handle("a", { t: "setCharacter", character: "nope" });
+      c.room.handle("a", { t: "setCharacter", character: 42 } as unknown as ClientMessage);
+      expect(c.bcast("characterChanged")).toHaveLength(1);
+      // new joiners see the current choice
+      c.room.join("b");
+      c.room.handle("b", { t: "hello", name: "Beto" });
+      expect(welcomeOf("b").players.find((p) => p.id === "a")?.character).toBe("punk");
+    });
+
+    it("does not broadcast when the character doesn't actually change", () => {
+      c.room.join("a");
+      c.room.handle("a", { t: "hello", name: "Ana", character: "farmer" });
+      c.room.handle("a", { t: "setCharacter", character: "farmer" });
+      expect(c.bcast("characterChanged")).toHaveLength(0);
+    });
+
+    it("rate-limits setCharacter spam", () => {
+      joinPlayer(c, "a");
+      for (let i = 0; i < 20; i++) c.room.handle("a", { t: "setCharacter", character: CHARACTER_IDS[i % CHARACTER_IDS.length] });
+      const burst = c.bcast("characterChanged").length;
+      expect(burst).toBeGreaterThan(0);
+      expect(burst).toBeLessThanOrEqual(4);
+      // Allowed again once the window has passed.
+      c.advance(1100);
+      c.room.handle("a", { t: "setCharacter", character: "beach" });
+      c.room.handle("a", { t: "setCharacter", character: "suit" });
+      expect(c.bcast("characterChanged").length).toBeGreaterThan(burst);
+    });
   });
 });

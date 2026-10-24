@@ -2,6 +2,8 @@ import {
   MAX_NAME_LENGTH,
   MAX_SESSION_ID_LENGTH,
   WEAPONS,
+  isCharacterId,
+  type CharacterId,
   type CarState,
   type DamageCause,
   type PlayerMotion,
@@ -62,6 +64,11 @@ export function parseMotion(v: unknown): PlayerMotion | null {
   if (typeof v.ground !== "boolean" || typeof v.aiming !== "boolean") return null;
   if (!isWeaponId(v.weapon)) return null;
   return { p, yaw: v.yaw, speed: v.speed, ground: v.ground, weapon: v.weapon, aiming: v.aiming, car };
+}
+
+/** A known character id, or null for anything else (unknown string, wrong type). */
+export function parseCharacter(v: unknown): CharacterId | null {
+  return isCharacterId(v) ? v : null;
 }
 
 /** A sane session id: a non-empty, reasonably short string. We don't care

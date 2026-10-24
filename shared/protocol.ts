@@ -16,6 +16,25 @@ export const MAX_PLAYERS = 16;
 
 export type Vec3 = [number, number, number];
 
+/* ================= CHARACTERS ================= */
+/** Character models (public/models/characters/<id>.glb). Order matters: it
+ * defines the colour -> character fallback, so append new ids at the end. */
+export const CHARACTER_IDS = ["casual_hoodie", "casual_2", "suit", "worker", "punk", "swat", "beach", "farmer"] as const;
+export type CharacterId = (typeof CHARACTER_IDS)[number];
+/** Used when there is neither an explicit choice nor a server colour yet. */
+export const DEFAULT_CHARACTER: CharacterId = "casual_hoodie";
+
+export function isCharacterId(v: unknown): v is CharacterId {
+  return typeof v === "string" && (CHARACTER_IDS as readonly string[]).includes(v);
+}
+
+/** Deterministic fallback character for a server-assigned colour (`color % N`). */
+export function characterForColor(color: number | null | undefined): CharacterId {
+  if (color == null || !Number.isFinite(color)) return DEFAULT_CHARACTER;
+  const i = Math.abs(Math.trunc(color)) % CHARACTER_IDS.length;
+  return CHARACTER_IDS[i];
+}
+
 /* ================= WEAPONS ================= */
 export type WeaponId = "fists" | "pistol" | "m4";
 
@@ -117,6 +136,9 @@ export interface PlayerSnapshot {
   kills: number;
   deaths: number;
   motion: PlayerMotion | null;
+  /** Chosen character (validated server-side; colour-derived when the client
+   * didn't choose). Optional so older servers/clients keep working. */
+  character?: string;
 }
 
 export type DamageCause = "vehicle" | "fall" | "explosion";
@@ -130,8 +152,12 @@ export type ClientMessage =
        * ephemeral per-tab id when storage is unavailable). Optional/additive
        * so older clients without it still work — see server/room.ts. */
       sessionId?: string;
+      /** Chosen character id (one of CHARACTER_IDS); optional/additive. */
+      character?: string;
     }
   | { t: "state"; motion: PlayerMotion }
+  /** Changes the character mid-game (validated + rate-limited server-side). */
+  | { t: "setCharacter"; character: string }
   | {
       t: "shoot";
       weapon: WeaponId;
@@ -157,6 +183,7 @@ export type ServerMessage =
   | { t: "welcome"; id: string; players: PlayerSnapshot[]; spawn: SpawnPoint }
   | { t: "playerJoined"; player: PlayerSnapshot }
   | { t: "playerLeft"; id: string }
+  | { t: "characterChanged"; id: string; character: string }
   | { t: "states"; players: { id: string; motion: PlayerMotion }[] }
   | { t: "shot"; shooterId: string; weapon: WeaponId; origin: Vec3; end: Vec3; hit: boolean }
   | { t: "health"; id: string; health: number; attackerId: string | null }
