@@ -7,6 +7,8 @@
 // applied live, persisted), the boot loading bar (loading/*), the ambient
 // soundscape + footsteps + car doors (audio/ambience*), vehicle VFX
 // (vehicles/vehicleVfx.ts) and the F3 performance overlay (hud/perfHud.ts).
+// Active ragdoll phase 1: dying bodies keep fading muscles (physics/muscles.ts)
+// and F4 toggles the ragdoll debug overlay (physics/ragdollDebug.ts).
 
 import * as THREE from "three";
 import {
@@ -67,7 +69,10 @@ import { rayTerrainHit } from "./combat/impacts";
 
 import { loadRapier, PhysicsWorld, type PhysicsVehicle } from "./physics/physicsWorld";
 import { CorpseManager } from "./physics/corpses";
+import { RagdollDebugOverlay } from "./physics/ragdollDebug";
+import type { Ragdoll } from "./physics/ragdoll";
 import { findKillingShot, ramVelocity, shotImpulse, type RecordedShot, type Vec3 } from "./physics/deathImpulse";
+import type { DeathCause } from "./physics/muscles";
 
 import { loadCharacterAssets } from "./assets/characterAssets";
 import { DEFAULT_CHARACTER, CHARACTER_NAMES, cycleCharacter, parseCharacterId, randomCharacter, resolveCharacter, type CharacterId } from "./characters/characterChoice";
@@ -331,6 +336,8 @@ export function createGame(): GameHandle {
   const corpses = new CorpseManager(scene);
   /** Rapier world for ragdolls; null until loaded (or if it failed: animated corpses). */
   let physics: PhysicsWorld | null = null;
+  /** F4: ragdoll wireframes, joints, centre of mass, contacts and muscle state. */
+  const ragdollDebug = new RagdollDebugOverlay(scene, () => corpses.ragdolls(), () => physics);
   /** Recent shots (ours + remote) used to aim the ragdoll impulse of network kills. */
   const recentShots: (RecordedShot & { weapon: WeaponId })[] = [];
   function recordShot(origin: THREE.Vector3, end: THREE.Vector3, weapon: WeaponId): void {
@@ -597,7 +604,10 @@ export function createGame(): GameHandle {
     hud.toast(m);
   }
 
-  function onLocalDeath(killer: string | null, killerId: string | null = null): void {
+  /** A killing blow: impulse at a world point, and what kind of death it makes (muscle fade style). */
+  type DeathBlow = { impulse: Vec3; point: Vec3; cause: DeathCause };
+
+  function onLocalDeath(killer: string | null, killerId: string | null = null, cause: DeathCause = "generic"): void {
     if (deathAt !== null) return;
     deathAt = tClock;
     killerAtDeath = killer;
@@ -614,15 +624,17 @@ export function createGame(): GameHandle {
     const velocity = carVel ?? { x: player.vx, y: player.vy, z: player.vz };
     setPlayerRig(rigFactory({ character: localCharacter, colors: PLAYER_COLORS, castShadow: true }), false);
     player.mesh.group.visible = false;
-    localCorpse = corpses.spawn({ rig: body, velocity, impulse: killingBlow({ x: player.x, y: player.y, z: player.z }, killerId) });
+    const blow = killingBlow({ x: player.x, y: player.y, z: player.z }, killerId);
+    // Thrown out of a crashing car = a tumble, like being run over.
+    localCorpse = corpses.spawn({ rig: body, velocity, impulse: blow, cause: blow?.cause ?? (carVel ? "ram" : cause) });
   }
 
   /** Impulse of the blow that killed someone standing at `pos`: a recent shot, or a ramming remote car. */
-  function killingBlow(pos: Vec3, killerId: string | null): { impulse: Vec3; point: Vec3 } | null {
+  function killingBlow(pos: Vec3, killerId: string | null): DeathBlow | null {
     const shot = findKillingShot(recentShots, pos, tClock, KILL_SHOT_MAX_AGE, KILL_SHOT_MAX_DIST);
     if (shot) {
       const dir = { x: shot.end.x - shot.origin.x, y: shot.end.y - shot.origin.y, z: shot.end.z - shot.origin.z };
-      return { impulse: shotImpulse(dir, shot.weapon), point: shot.end };
+      return { impulse: shotImpulse(dir, shot.weapon), point: shot.end, cause: "shot" };
     }
     const car = killerId ? remotePlayers.get(killerId)?.car : null;
     if (car) return ramBlow({ x: Math.sin(car.yaw) * car.speed, y: 0, z: Math.cos(car.yaw) * car.speed }, pos);
@@ -630,9 +642,9 @@ export function createGame(): GameHandle {
   }
 
   /** Shove of a car moving at `carVel` hitting a body standing at `pos`. */
-  function ramBlow(carVel: Vec3, pos: Vec3): { impulse: Vec3; point: Vec3 } {
+  function ramBlow(carVel: Vec3, pos: Vec3): DeathBlow {
     const v = ramVelocity(carVel);
-    return { impulse: { x: v.x * RAM_MASS, y: v.y * RAM_MASS, z: v.z * RAM_MASS }, point: { x: pos.x, y: pos.y + 0.9, z: pos.z } };
+    return { impulse: { x: v.x * RAM_MASS, y: v.y * RAM_MASS, z: v.z * RAM_MASS }, point: { x: pos.x, y: pos.y + 0.9, z: pos.z }, cause: "ram" };
   }
 
   /** A remote player died: their current body stays as a corpse (fresh hidden rig for the respawn). */
@@ -643,11 +655,11 @@ export function createGame(): GameHandle {
     const p = { x: rig.group.position.x, y: rig.group.position.y, z: rig.group.position.z };
     let blow = killingBlow(p, killerId);
     if (!blow && killerId === myId && player.car) blow = ramBlow({ x: player.car.vx, y: 0, z: player.car.vz }, p);
-    corpses.spawn({ rig, velocity, impulse: blow });
+    corpses.spawn({ rig, velocity, impulse: blow, cause: blow?.cause ?? "generic" });
   }
 
   /** Kills a ped: its body becomes a corpse and the ped gets a fresh (hidden) rig for its respawn. */
-  function killPed(p: Ped, blow: { impulse: Vec3; point: Vec3 } | null, velocity: Vec3 = pedVelocity(p)): void {
+  function killPed(p: Ped, blow: { impulse: Vec3; point: Vec3 } | null, velocity: Vec3 = pedVelocity(p), cause: DeathCause = blow ? "shot" : "generic"): void {
     if (p.state === "down") return;
     hitPed(p);
     const body = p.mesh;
@@ -658,7 +670,7 @@ export function createGame(): GameHandle {
     p.mesh = fresh;
     p.bodyTaken = true;
     shootables.add(fresh.group, { kind: "ped", refId: p });
-    corpses.spawn({ rig: body, velocity, impulse: blow });
+    corpses.spawn({ rig: body, velocity, impulse: blow, cause });
   }
 
   /** Refines a hitscan result: the ground (raised blocks / roads) or a corpse in front of it, when closer. */
@@ -890,6 +902,11 @@ export function createGame(): GameHandle {
       // Frame-time overlay (the browser's own F3 is "find").
       e.preventDefault();
       if (!e.repeat) togglePerfHud();
+      return;
+    }
+    if (e.code === "F4") {
+      e.preventDefault();
+      if (!e.repeat) ragdollDebug.toggle();
       return;
     }
     // The settings panel takes the keyboard: Esc goes back to the pause menu.
@@ -1154,7 +1171,7 @@ export function createGame(): GameHandle {
             const killed = applyDamage(player, dmg, tClock);
             net.send({ t: "selfDamage", amount: dmg, cause: "fall" });
             hud.flashDamage();
-            if (killed) onLocalDeath(null);
+            if (killed) onLocalDeath(null, null, "ram");
           }
           void dt;
           return;
@@ -1182,7 +1199,7 @@ export function createGame(): GameHandle {
       const dz = car.z - pos.z;
       if (dx * dx + dz * dz >= rs * rs) continue;
       // The body is thrown along the car's velocity (on top of being shoved by its proxy).
-      killPed(p, null, ramVelocity({ x: car.vx, y: 0, z: car.vz }));
+      killPed(p, null, ramVelocity({ x: car.vx, y: 0, z: car.vz }), "ram");
       spookPedsNear(peds, pos.x, pos.z, 10);
       car.vx *= RAM_IMPACT_SPEED_RETENTION;
       car.vz *= RAM_IMPACT_SPEED_RETENTION;
@@ -1293,6 +1310,7 @@ export function createGame(): GameHandle {
       world?.facades?.update(cam.fx, cam.fz, natureShowAll, camera);
       world?.furniture?.update(cam.fx, cam.fz, env.state.nightF, natureShowAll);
       corpses.update(dt);
+      ragdollDebug.update(dt);
       effects.update(dt);
       remotePlayers.update(dt, env.state.nightF);
       updateHud(dt);
@@ -1685,6 +1703,93 @@ export function createGame(): GameHandle {
       initCharacterPicker();
     });
 
+  /** Dev-only ragdoll staging helpers (exposed as __gtaDebug.ragdoll). */
+  function ragdollDebugHooks() {
+    const dummies: Ragdoll[] = [];
+    /** A dummy that still exists (corpses get capped / cleared). */
+    const get = (id: number): Ragdoll | null => {
+      const rd = dummies[id];
+      return rd && corpses.ragdolls().includes(rd) ? rd : null;
+    };
+    /** Height (m above the feet) of the body part a scripted ped shot aims at. */
+    const PART_HEIGHT: Record<string, number> = { head: 1.55, chest: 1.25, pelvis: 0.9, legL: 0.35, legR: 0.35, armL: 1.2, armR: 1.2 };
+    return {
+      /** Spawns a ragdoll dummy in its idle pose `dist` m in front of the player, facing them
+       * (or turned by `yawOffset`), holding its pose at `strength`. Returns its id, -1 without Rapier. */
+      spawnDummy: (opts: { dist?: number; strength?: number; pinned?: boolean; character?: string; yawOffset?: number } = {}) => {
+        if (!physics) return -1;
+        const dist = opts.dist ?? 3;
+        const x = player.x + Math.sin(player.yaw) * dist;
+        const z = player.z + Math.cos(player.yaw) * dist;
+        const rig = rigFactory({ character: parseCharacterId(opts.character) ?? randomCharacter(), colors: randomPedColors(), castShadow: true });
+        rig.group.position.set(x, groundY(x, z), z);
+        rig.group.rotation.set(0, player.yaw + Math.PI + (opts.yawOffset ?? 0), 0);
+        rig.update(1 / 60, { speed: 0, ground: true, weapon: "fists", aiming: false, alive: true });
+        const h = corpses.spawn({ rig, velocity: { x: 0, y: 0, z: 0 }, hold: { strength: opts.strength ?? 1, pinned: opts.pinned ?? false } });
+        if (!h.ragdoll) return -1;
+        dummies.push(h.ragdoll);
+        return dummies.length - 1;
+      },
+      setStrength: (id: number, strength: number) => get(id)?.hold(strength),
+      pin: (id: number, on: boolean) => get(id)?.setPinned(on),
+      /** Kills dummy `id`: a shot along (dirX, dirZ) hitting ragdoll part `part` (bone name,
+       * default the chest), a car ram at `speed` m/s along that direction, or a plain collapse. */
+      kill: (id: number, opts: { dirX?: number; dirZ?: number; part?: string; cause?: DeathCause; speed?: number; weapon?: WeaponId; seed?: number } = {}) => {
+        const rd = get(id);
+        if (!rd) return null;
+        rd.setPinned(false);
+        const cause = opts.cause ?? "shot";
+        const dx = opts.dirX ?? Math.sin(player.yaw);
+        const dz = opts.dirZ ?? Math.cos(player.yaw);
+        const len = Math.hypot(dx, dz) || 1;
+        const dir = { x: dx / len, y: 0, z: dz / len };
+        let struck: string | null = null;
+        if (cause === "ram") {
+          const speed = opts.speed ?? 12;
+          rd.addVelocity(ramVelocity({ x: dir.x * speed, y: 0, z: dir.z * speed }));
+        } else if (cause === "shot") {
+          const p = rd.bodyOf(opts.part ?? "Abdomen")?.worldCom();
+          if (p) struck = rd.applyImpulseAt(shotImpulse(dir, opts.weapon ?? "pistol"), p);
+        }
+        rd.startDeath({ cause, struck, seed: opts.seed ?? 1 });
+        return struck;
+      },
+      /** Shoots the nearest living ped from the player's position at a body part (the real killPed path). */
+      shootNearestPed: (part = "chest", weapon: WeaponId = "pistol") => {
+        let best: Ped | null = null;
+        let bestD = Infinity;
+        for (const p of peds) {
+          if (p.state === "down" || !p.mesh.group.visible) continue;
+          const pos = pedPosition(p);
+          const d = Math.hypot(pos.x - player.x, pos.z - player.z);
+          if (d < bestD) {
+            bestD = d;
+            best = p;
+          }
+        }
+        if (!best) return null;
+        const pos = pedPosition(best);
+        const y = best.mesh.group.position.y + (PART_HEIGHT[part] ?? 1.25);
+        const dir = { x: pos.x - player.x, y: 0, z: pos.z - player.z };
+        killPed(best, { impulse: shotImpulse(dir, weapon), point: { x: pos.x, y, z: pos.z } });
+        return { x: pos.x, z: pos.z, distance: bestD };
+      },
+      list: () =>
+        corpses.ragdolls().map((rd) => {
+          const t = rd.bodies[0]?.translation();
+          return { mode: rd.muscleMode, strength: rd.strength, maxError: rd.maxMotorError(), sleeping: rd.isSleeping(), pelvis: t ? { x: t.x, y: t.y, z: t.z } : null };
+        }),
+      overlay: (on?: boolean) => {
+        ragdollDebug.setVisible(on ?? !ragdollDebug.isVisible());
+        return ragdollDebug.isVisible();
+      },
+      clear: () => {
+        corpses.clear();
+        dummies.length = 0;
+      },
+    };
+  }
+
   // Dev-only telemetry and staging helpers for automated visual checks.
   const debugHook = process.env.NODE_ENV === "development";
   if (debugHook) {
@@ -1756,6 +1861,8 @@ export function createGame(): GameHandle {
         player.alive = false;
         onLocalDeath(null);
       },
+      /** Ragdoll muscle staging (dummies in front of the player, scripted deaths, F4 overlay). */
+      ragdoll: ragdollDebugHooks(),
       /** Turns the follow camera to a yaw / pitch. */
       look: (yaw: number, pitch = cam.pitch) => {
         cam.yaw = yaw;
@@ -1812,6 +1919,7 @@ export function createGame(): GameHandle {
       player.mesh.dispose();
       despawnPeds();
       corpses.clear();
+      ragdollDebug.dispose();
       physics?.dispose();
       resetGround();
       remotePlayers.dispose();

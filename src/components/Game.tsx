@@ -182,7 +182,9 @@ export default function Game() {
             <br />
             <kbd>N</kbd> avanzar 6 horas (día/noche)
             <br />
-            <kbd>F3</kbd> rendimiento · Ajustes en la pausa
+            <kbd>F3</kbd> rendimiento · <kbd>F4</kbd> depuración de ragdolls
+            <br />
+            Ajustes en la pausa
             <br />
             Botón «Reiniciar» en pantalla
           </div>

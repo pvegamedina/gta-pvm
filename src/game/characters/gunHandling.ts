@@ -143,8 +143,10 @@ export class GunHandling {
   private readonly leftArm: PoseSnapshot;
   private supportFor: THREE.Object3D | null = null;
   private support: THREE.Object3D | null = null;
-  /** Bind pose of every bone this controller rotates (some, like Torso/Chest,
-   * have no animation tracks, so the mixer would never overwrite our edits). */
+  /** Bind pose of every bone this controller rotates. All of them have
+   * animation tracks in the Quaternius clips (in this rig only Root and Hips
+   * have none), so this is a safety net: a clip missing a track would
+   * otherwise keep last frame's procedural edits and accumulate them. */
   private readonly bind: PoseSnapshot;
 
   constructor(private readonly bones: UpperBodyBones) {

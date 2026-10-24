@@ -7,6 +7,9 @@
 // `ragdollRoot` so a corpse can hand its skeleton to the physics ragdoll.
 // After the mixer, characters/gunHandling.ts adds the start/stop lean and
 // the two-handed weapon stance (IK), blended by the smoothed armed/aim weights.
+// Every bone the ragdoll writes (plus the untracked Root and Hips) is reset to
+// its bind transform before each mixer update (characters/boneSnapshot.ts), so
+// a rig handed back from physics to animation never keeps a stale pose.
 
 import * as THREE from "three";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
@@ -19,6 +22,8 @@ import type { CharacterRig, RigSpec, RigUpdate } from "./characterRig";
 import { MUZZLE_NAME } from "./weaponPose";
 import { GUN_KICK_OMEGA, RecoilSpring, WEAPON_FEEL } from "../combat/recoil";
 import { GunHandling, findUpperBodyBones } from "./gunHandling";
+import { BoneTransformSnapshot, findBones } from "./boneSnapshot";
+import { RAGDOLL_WRITTEN_BONES } from "../physics/ragdoll";
 
 /** GLTFLoader strips "." from node names, so the "Wrist.R" bone is named "WristR". */
 const WEAPON_SOCKET_NAMES = ["WristR", "Wrist.R"];
@@ -66,6 +71,10 @@ export function createModelRig(assets: CharacterAssets, spec: RigSpec): Characte
   // Captures the bind pose, so it must run before the first mixer update.
   const upperBones = findUpperBodyBones(visual);
   const handling = upperBones ? new GunHandling(upperBones) : null;
+  // Same: bind position/rotation/scale of the ragdoll-driven bones (and the
+  // track-less Root/Hips), restored before every mixer update.
+  const ragdollBind = new BoneTransformSnapshot(findBones(visual, [...RAGDOLL_WRITTEN_BONES, "Root", "Hips"]));
+  ragdollBind.save();
 
   let weapon: WeaponId = "fists";
   let handle: WeaponMeshHandle | null = null;
@@ -75,6 +84,7 @@ export function createModelRig(assets: CharacterAssets, spec: RigSpec): Characte
   const buildWeapon = (w: "pistol" | "m4") => assets.weapons[w].clone();
 
   function apply(): void {
+    ragdollBind.restore();
     handling?.restoreBindPose();
     for (const [name, action] of actions) {
       action.setEffectiveWeight(anim.weight(name));

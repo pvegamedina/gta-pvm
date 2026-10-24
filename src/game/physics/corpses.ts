@@ -4,6 +4,9 @@
 // Rapier available and a skinned rig, the body becomes a physical ragdoll
 // (physics/ragdoll.ts) — no death animation; otherwise (procedural fallback
 // rig, or Rapier failed to load) it plays its death animation once and stays.
+// A fresh ragdoll "dies" with muscles (physics/muscles.ts): partial strength
+// holding the death pose, fading to limp over ~1-1.8 s with protective
+// reflexes, the struck limb limp at once (car rams: an almost instant drop).
 // At most CORPSE_CAP corpses persist: beyond that the oldest fades out over
 // CORPSE_FADE_S and is freed (bodies, colliders, cloned materials, skeleton).
 
@@ -13,6 +16,7 @@ import type { WeaponId } from "@shared/protocol";
 import { CorpseRoster } from "./corpseRoster";
 import { Ragdoll } from "./ragdoll";
 import { shotImpulse, type Vec3 } from "./deathImpulse";
+import type { DeathCause } from "./muscles";
 import type { PhysicsVehicle, PhysicsWorld } from "./physicsWorld";
 
 export const CORPSE_CAP = 20;
@@ -30,6 +34,19 @@ export interface CorpseSpawn {
   velocity: Vec3;
   /** Killing blow applied at a world point (shot direction, punch...). */
   impulse?: { impulse: Vec3; point: Vec3 } | null;
+  /** How the character died (muscle fade style); default "shot" with an impulse, else "generic". */
+  cause?: DeathCause;
+  /** Seed of the death's randomness (default: random). */
+  seed?: number;
+  /** Debug: hold the pose at this strength instead of dying (optionally with the pelvis pinned). */
+  hold?: { strength: number; pinned?: boolean };
+}
+
+export interface CorpseHandle {
+  /** Writes the body's pelvis (or the rig's position) into `out`; false once the corpse is gone. */
+  focus(out: THREE.Vector3): boolean;
+  /** The physical ragdoll (null for animated corpses). */
+  readonly ragdoll: Ragdoll | null;
 }
 
 interface Corpse {
@@ -73,7 +90,7 @@ export class CorpseManager {
    * Takes ownership of `s.rig` (already detached from its entity) and turns it
    * into a corpse. Returns a handle whose `focus` tracks the body's pelvis.
    */
-  spawn(s: CorpseSpawn): { focus(out: THREE.Vector3): boolean } {
+  spawn(s: CorpseSpawn): CorpseHandle {
     const rig = s.rig;
     rig.dropWeapon();
     if (!rig.group.parent) this.scene.add(rig.group);
@@ -82,12 +99,22 @@ export class CorpseManager {
     let ragdoll: Ragdoll | null = null;
     if (this.physics && rig.ragdollRoot) {
       ragdoll = Ragdoll.create(this.physics, rig.ragdollRoot, { velocity: s.velocity, slot: this.physics.allocCorpseSlot() });
-      if (ragdoll && s.impulse) ragdoll.applyImpulseAt(s.impulse.impulse, s.impulse.point);
+      if (ragdoll) {
+        const struck = s.impulse ? ragdoll.applyImpulseAt(s.impulse.impulse, s.impulse.point) : null;
+        if (s.hold) {
+          ragdoll.hold(s.hold.strength);
+          if (s.hold.pinned) ragdoll.setPinned(true);
+        } else {
+          const cause = s.cause ?? (s.impulse ? "shot" : "generic");
+          ragdoll.startDeath({ cause, struck: cause === "shot" ? struck : null, seed: s.seed ?? Math.floor(Math.random() * 0x7fffffff) });
+        }
+      }
     }
     const corpse: Corpse = { rig, ragdoll, age: 0, calm: 0, fadeMats: null };
     this.corpses.push(corpse);
     for (const gone of this.roster.add(corpse)) this.remove(gone);
     return {
+      ragdoll,
       focus: (out) => {
         if (!this.corpses.includes(corpse)) return false;
         const pelvis = corpse.ragdoll?.bodies[0];
@@ -100,12 +127,20 @@ export class CorpseManager {
     };
   }
 
-  /** One fixed physics step (only while ragdolls exist); cars push corpses. */
+  /** One fixed physics step (only while ragdolls exist); cars push corpses, dying muscles act first. */
   step(vehicles: readonly (readonly PhysicsVehicle[])[]): void {
     const pw = this.physics;
     if (!pw || !this.corpses.some((c) => c.ragdoll)) return;
     pw.syncVehicles(vehicles);
+    for (const c of this.corpses) c.ragdoll?.stepMuscles(pw.world.timestep);
     pw.step();
+  }
+
+  /** Every live ragdoll, oldest first (debug overlay). */
+  ragdolls(): Ragdoll[] {
+    const out: Ragdoll[] = [];
+    for (const c of this.corpses) if (c.ragdoll) out.push(c.ragdoll);
+    return out;
   }
 
   /** Per-frame: copies ragdoll poses to bones, ages animated corpses, runs fades. */
@@ -114,7 +149,8 @@ export class CorpseManager {
       c.age += dt;
       if (c.ragdoll) {
         c.ragdoll.sync();
-        if (!c.ragdoll.isSleeping()) {
+        // Not while the muscles still fade (they keep the body awake on purpose).
+        if (!c.ragdoll.isSleeping() && !c.ragdoll.dying) {
           c.calm = c.ragdoll.maxSpeed() < SETTLE_SPEED ? c.calm + dt : 0;
           if (c.calm > SETTLE_S) c.ragdoll.sleep();
         }

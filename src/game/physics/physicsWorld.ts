@@ -49,6 +49,8 @@ const STATIC_GROUPS = groups(BIT_STATIC, 0xffff);
 const CAR_GROUPS = groups(BIT_CARS, ALL_CORPSE_BITS);
 /** Query filter that only sees ragdoll parts (bullets hitting corpses). */
 export const CORPSE_QUERY_GROUPS = groups(0xffff, ALL_CORPSE_BITS);
+/** Query filter that only sees the static world (terrain, buildings, props). */
+const STATIC_QUERY_GROUPS = groups(0xffff, BIT_STATIC);
 
 export function corpseGroups(slot: number): number {
   const bit = 1 << (FIRST_CORPSE_BIT + (slot % CORPSE_SLOTS));
@@ -205,6 +207,12 @@ export class PhysicsWorld {
     const ray = new this.R.Ray(origin, dir);
     const hit = this.world.castRay(ray, maxDist, true, undefined, CORPSE_QUERY_GROUPS);
     return hit ? { collider: hit.collider, distance: hit.timeOfImpact } : null;
+  }
+
+  /** Distance along a ray (dir normalized) to the static world, or null within maxDist. */
+  castStaticRay(origin: { x: number; y: number; z: number }, dir: { x: number; y: number; z: number }, maxDist: number): number | null {
+    const hit = this.world.castRay(new this.R.Ray(origin, dir), maxDist, true, undefined, STATIC_QUERY_GROUPS);
+    return hit ? hit.timeOfImpact : null;
   }
 
   removeBody(body: RigidBody): void {
