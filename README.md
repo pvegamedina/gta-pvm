@@ -29,6 +29,16 @@ digital del terreno MDT05 del IGN. Cubre unos 1,2 × 1,3 km alrededor del campus
   intersecciones reguladas) y los peatones pasean por aceras y caminos.
 - El servidor lee los puntos de aparición del mismo fichero.
 
+## El boss: JOSE ENRIQUE
+
+Un jefe con minigun patrulla el campus con su nombre y su barra de vida sobre
+la cabeza. Cuando ve a un jugador a menos de 70 m (los edificios le tapan la
+vista), se gira hacia él, hace girar los cañones y dispara ráfagas; si estás
+lejos, se acerca. Tiene 2000 de vida, matarlo cuenta como una baja y reaparece
+al minuto. En multijugador lo controla el servidor (todos ven el mismo boss y
+el daño es autoritativo); sin conexión, la misma lógica se ejecuta en el
+cliente. Lógica en `src/game/boss/bossBrain.ts`, aspecto en `bossView.ts`.
+
 ## Requisitos
 
 - Node.js 20 o superior
@@ -105,6 +115,7 @@ src/game/
   combat/             armas, vida, efectos visuales/sonoros, raycasting, mallas de armas
   net/                 cliente WebSocket, interpolación de snapshots, jugadores remotos
   hud/                controlador del HUD
+  boss/               boss con minigun: lógica pura (compartida con el servidor) y su vista 3D
   game.ts             bucle principal y cableado de todos los sistemas
 shared/protocol.ts    contrato de red compartido con el servidor (no se modifica aquí)
 server/               servidor WebSocket autoritativo (desarrollado aparte)

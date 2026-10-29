@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   SERVER_PORT,
+  SPAWN_POINTS,
   TICK_RATE_HZ,
   WS_PATH,
   encode,
@@ -9,7 +10,9 @@ import {
   type ServerMessage,
 } from "../shared/protocol";
 import { GameRoom } from "./room";
-import { loadMapSpawns } from "./mapSpawns";
+import { loadMap, spawnsFromMap } from "./mapSpawns";
+import { BossBrain } from "../src/game/boss/bossBrain";
+import { createBossWorld } from "../src/game/boss/bossWorld";
 import { isRecord } from "./validation";
 
 // PORT is the convention used by hosting platforms (Render, Railway, Heroku…)
@@ -27,12 +30,16 @@ function sendTo(socket: WebSocket | undefined, msg: ServerMessage): void {
   if (socket?.readyState === WebSocket.OPEN) socket.send(encode(msg));
 }
 
-// Spawn points come from the same campus map file the client renders.
-const spawns = loadMapSpawns();
+// Spawn points and the boss's world come from the same campus map file the client renders.
+const map = loadMap();
+const spawns = map ? spawnsFromMap(map) : SPAWN_POINTS;
 console.log(`[map] ${spawns.length} spawn points`);
+const boss = map ? new BossBrain(createBossWorld(map)) : undefined;
+if (boss) console.log(`[boss] spawned at ${boss.x.toFixed(0)}, ${boss.z.toFixed(0)}`);
 
 const room = new GameRoom({
   spawns,
+  boss,
   now: Date.now,
   random: Math.random,
   schedule: (fn, ms) => { setTimeout(fn, ms); },

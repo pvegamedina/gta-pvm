@@ -19,6 +19,9 @@ import {
   RESPAWN_DELAY_MS,
   MAX_NAME_LENGTH,
   SESSION_REPLACED_MESSAGE,
+  BOSS_ID,
+  BOSS_NAME,
+  BOSS_MINIGUN,
   type WeaponId,
   type PlayerMotion,
   type ServerMessage,
@@ -82,6 +85,10 @@ import { modelRigFactory, proceduralRigFactory } from "./characters/rigFactory";
 
 import { NetClient, defaultServerUrl } from "./net/client";
 import { RemotePlayerManager } from "./net/remotePlayers";
+
+import { BossBrain } from "./boss/bossBrain";
+import { createBossWorld } from "./boss/bossWorld";
+import { BossView } from "./boss/bossView";
 
 import { Hud } from "./hud/hud";
 import { createPlaceTracker, updateBuildingName, updateStreetName } from "./hud/placeNames";
@@ -348,6 +355,28 @@ export function createGame(): GameHandle {
   let localCorpse: { focus(out: THREE.Vector3): boolean } | null = null;
   const corpseFocus = new THREE.Vector3();
   const remotePlayers = new RemotePlayerManager(scene, shootables);
+  /** The minigun boss as drawn; fed by the server, or by `localBoss` while offline. */
+  const bossView = new BossView(scene, shootables, {
+    fireRound: (muzzle, end) => {
+      const dir = end.clone().sub(muzzle);
+      const dist = dir.length();
+      dir.normalize();
+      const res = castShot(muzzle, dir, dist + 0.5, shootables, 0.3, camera);
+      // Its own body / name tag never stops its rounds.
+      const imp = res.hit?.kind === "boss" ? { point: end.clone(), kind: "none" as ImpactKind, normal: null } : resolveImpact(muzzle, dir, res, "m4");
+      effects.shot({ weapon: "m4", muzzle: muzzle.clone(), end: imp.point, right: cameraRight(Math.atan2(dir.x, dir.z)), impact: imp.kind, normal: imp.normal, shooter: BOSS_ID, local: false });
+      effects.gunshot("m4", muzzle.distanceTo(camera.position));
+      recordShot(muzzle, imp.point, "m4");
+      if (Math.random() < 0.1) spookPedsNear(peds, muzzle.x, muzzle.z, 30);
+    },
+    onDeath: (rig) => {
+      const p = { x: rig.group.position.x, y: rig.group.position.y, z: rig.group.position.z };
+      const blow = killingBlow(p, null);
+      corpses.spawn({ rig, velocity: { x: 0, y: 0, z: 0 }, impulse: blow, cause: blow?.cause ?? "generic" });
+    },
+  });
+  /** Offline-only boss brain (the server runs the real one in multiplayer). */
+  let localBoss: BossBrain | null = null;
   const hud = new Hud();
   const miniCtx = ($("mini") as HTMLCanvasElement).getContext("2d")!;
   const perfHud = new PerfHud();
@@ -502,10 +531,15 @@ export function createGame(): GameHandle {
         break;
       }
       case "killed": {
-        const killerName = msg.killerId ? remotePlayers.get(msg.killerId)?.name ?? (msg.killerId === myId ? myName : "???") : null;
-        const victimName = msg.victimId === myId ? myName : remotePlayers.get(msg.victimId)?.name ?? "???";
-        hud.pushKillFeed({ killer: killerName ?? "Mundo", victim: victimName, weapon: msg.weapon ? WEAPONS[msg.weapon].name : msg.cause ?? "" });
-        if (msg.victimId === myId) onLocalDeath(killerName, msg.killerId);
+        const nameOf = (id: string) => (id === BOSS_ID ? BOSS_NAME : id === myId ? myName : remotePlayers.get(id)?.name ?? "???");
+        const killerName = msg.killerId ? nameOf(msg.killerId) : null;
+        const victimName = nameOf(msg.victimId);
+        const weaponName = msg.killerId === BOSS_ID ? BOSS_MINIGUN.name : msg.weapon ? WEAPONS[msg.weapon].name : msg.cause ?? "";
+        hud.pushKillFeed({ killer: killerName ?? "Mundo", victim: victimName, weapon: weaponName });
+        // The boss's body is handled by bossView when its state says it died.
+        if (msg.victimId === BOSS_ID) {
+          if (msg.killerId === myId) toast(`¡Has derrotado a ${BOSS_NAME}!`);
+        } else if (msg.victimId === myId) onLocalDeath(killerName, msg.killerId);
         else spawnRemoteCorpse(msg.victimId, msg.killerId);
         break;
       }
@@ -529,6 +563,9 @@ export function createGame(): GameHandle {
         }
         break;
       }
+      case "boss":
+        bossView.apply(msg.boss);
+        break;
       case "pong":
         localPing = Math.max(0, Math.round(performance.now() - msg.ts));
         break;
@@ -685,7 +722,7 @@ export function createGame(): GameHandle {
     let dist = res.distance;
     let kind: ImpactKind = "none";
     let normal = res.normal;
-    const living = !!res.hit && (res.hit.kind === "ped" || res.hit.kind === "remotePlayer");
+    const living = !!res.hit && (res.hit.kind === "ped" || res.hit.kind === "remotePlayer" || res.hit.kind === "boss");
     if (res.hit) kind = living ? "flesh" : res.hit.kind === "building" ? "surface" : "vehicle";
     const gd = rayTerrainHit(origin, dir, dist, (x, z) => groundY(x, z));
     if (gd !== null && gd < dist) {
@@ -811,10 +848,11 @@ export function createGame(): GameHandle {
       const dir = camera.getWorldDirection(new THREE.Vector3());
       const origin = camera.position.clone();
       const res = castShot(origin, dir, WEAPONS.fists.range, shootables, 0.3, camera);
-      if (res.hit && (res.hit.kind === "ped" || res.hit.kind === "remotePlayer")) {
+      if (res.hit && (res.hit.kind === "ped" || res.hit.kind === "remotePlayer" || res.hit.kind === "boss")) {
         effects.impact(res.point, "flesh", null);
         if (res.hit.kind === "ped") killPed(res.hit.refId as Ped, { impulse: shotImpulse(dir, "fists"), point: res.point });
         else {
+          if (res.hit.kind === "boss") hitLocalBoss("fists");
           hud.hitMarker();
           recordShot(origin, res.point, "fists");
           net.send({ t: "shoot", weapon: "fists", origin: [origin.x, origin.y, origin.z], end: [res.point.x, res.point.y, res.point.z], targetId: String(res.hit.refId) });
@@ -865,8 +903,9 @@ export function createGame(): GameHandle {
         spookPedsNear(peds, res.point.x, res.point.z, 14);
         hud.hitMarker();
         effects.hitTick();
-      } else if (res.hit.kind === "remotePlayer") {
+      } else if (res.hit.kind === "remotePlayer" || res.hit.kind === "boss") {
         targetId = String(res.hit.refId);
+        if (res.hit.kind === "boss") hitLocalBoss(id);
         hud.hitMarker();
         effects.hitTick();
       }
@@ -876,6 +915,31 @@ export function createGame(): GameHandle {
     // `end` is the visual impact (ground/corpse included); targetId drives damage.
     net.send({ t: "shoot", weapon: id, origin: [origin.x, origin.y, origin.z], end: [imp.point.x, imp.point.y, imp.point.z], targetId });
     if (result.startedReload) effects.reloadSound(id);
+  }
+
+  /** Offline, our rounds hurt the local boss brain (online the server applies them). */
+  function hitLocalBoss(weapon: WeaponId): void {
+    if (net.isOnline() || !localBoss) return;
+    if (!localBoss.damage(WEAPONS[weapon].damage)) return;
+    localKills++;
+    hud.pushKillFeed({ killer: myName, victim: BOSS_NAME, weapon: WEAPONS[weapon].name });
+    toast(`¡Has derrotado a ${BOSS_NAME}!`);
+  }
+
+  /** Offline boss: only the local player to shoot at, damage applied right here. */
+  function stepLocalBoss(dt: number): void {
+    if (!localBoss) return;
+    const targets = player.alive && deathAt === null ? [{ id: "local", x: player.x, y: player.y, z: player.z, alive: true, inCar: player.mode === "car" }] : [];
+    for (const hit of localBoss.update(dt, targets)) {
+      if (!player.alive) break;
+      hud.flashDamage();
+      if (applyDamage(player, hit.amount, tClock)) {
+        hud.pushKillFeed({ killer: BOSS_NAME, victim: myName, weapon: BOSS_MINIGUN.name });
+        localDeaths++;
+        onLocalDeath(BOSS_NAME, BOSS_ID);
+      }
+    }
+    bossView.apply(localBoss.snapshot());
   }
 
   function manualReload(): void {
@@ -1097,6 +1161,7 @@ export function createGame(): GameHandle {
       syncVehicleHitboxes(maintainTraffic(scene, vehicles, w.roadNet, cam.fx, cam.fz, deadCars));
     }
     updatePeds(peds, dt, vehicles, player, cam.fx, cam.fz, w.footNet);
+    if (!net.isOnline()) stepLocalBoss(dt);
     for (const v of vehicles) {
       // Far cars are hidden (the fog hides them anyway; saves their draw calls).
       v.root.visible = v.mode === "player" || Math.hypot(v.x - cam.fx, v.z - cam.fz) < VEHICLE_VIEW * getViewScale();
@@ -1322,6 +1387,8 @@ export function createGame(): GameHandle {
       ragdollDebug.update(dt);
       effects.update(dt);
       remotePlayers.update(dt, env.state.nightF, camera.position.x, camera.position.z);
+      const bossAt = bossView.position();
+      bossView.update(dt, (x, z) => groundY(x, z), bossAt ? Math.hypot(bossAt.x - camera.position.x, bossAt.z - camera.position.z) : 0);
       updateHud(dt);
       updateAudioFx(dt);
       updateFootsteps(dt);
@@ -1532,6 +1599,8 @@ export function createGame(): GameHandle {
       if (Math.abs(m.p[0] - cam.fx) > 130 || Math.abs(m.p[2] - cam.fz) > 130) continue;
       dots.push({ x: m.p[0], z: m.p[2], color: "#4ea8ff", r: 3 });
     }
+    const boss = bossView.position();
+    if (boss) dots.push({ x: boss.x, z: boss.z, color: "#ff2d55", r: 5 });
     const headingYaw = player.mode === "car" && player.car ? player.car.yaw : player.yaw;
     drawMinimap(miniCtx, world?.minimap ?? null, cam.yaw, cam.fx, cam.fz, headingYaw, dots);
   }
@@ -1664,6 +1733,7 @@ export function createGame(): GameHandle {
       w.addFurniture(props, megakit);
       if (props) w.signals.useModel(props.get("traffic_light") ?? null);
       roadIndex = createRoadIndex(map.roads);
+      localBoss = new BossBrain(createBossWorld(map));
       groundAt = createGroundClassifier(map.roads, map.landuse);
       world = w;
       console.info(
@@ -1706,6 +1776,7 @@ export function createGame(): GameHandle {
       assetsReady = true;
       rebuildPlayerRig();
       remotePlayers.setRigFactory(factory);
+      bossView.setRigFactory(factory);
       remotePlayers.refreshCars();
       loading.finish();
       setPlayLoading(false);
@@ -1835,6 +1906,16 @@ export function createGame(): GameHandle {
         return vehicles.length - 1;
       },
       teleport: (x: number, z: number, yaw = player.yaw) => teleportPlayer(x, z, yaw),
+      /** The boss as drawn (server or offline brain). */
+      boss: () => ({ position: bossView.position(), local: localBoss?.snapshot() ?? null }),
+      /** Dev-only (offline): moves the local boss `dist` m in front of the player, facing them. */
+      bossHere: (dist = 25) => {
+        if (!localBoss) return false;
+        localBoss.x = player.x + Math.sin(player.yaw) * dist;
+        localBoss.z = player.z + Math.cos(player.yaw) * dist;
+        localBoss.yaw = player.yaw + Math.PI;
+        return true;
+      },
       /** Dev-only: an AI vehicle of a given type in traffic near the camera focus (index, or -1). */
       spawnTraffic: (type: string, minDist = 25, siren = false) => {
         if (!world) return -1;
@@ -1934,6 +2015,7 @@ export function createGame(): GameHandle {
       physics?.dispose();
       resetGround();
       remotePlayers.dispose();
+      bossView.dispose();
       effects.dispose();
       audio.dispose();
       if (debugHook) delete (window as unknown as Record<string, unknown>).__gtaDebug;

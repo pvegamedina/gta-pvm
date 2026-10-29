@@ -84,6 +84,43 @@ export const FIRE_RATE_TOLERANCE = 0.6;
 /** Extra metres tolerated on range validation (position latency). */
 export const RANGE_TOLERANCE = 12;
 
+/* ================= BOSS ================= */
+/** Id the boss uses wherever a player id goes (shot targets, attackers, killers). */
+export const BOSS_ID = "boss";
+export const BOSS_NAME = "JOSE ENRIQUE";
+export const BOSS_MAX_HEALTH = 2000;
+export const BOSS_RESPAWN_DELAY_MS = 60_000;
+
+/** The boss's minigun (not a player weapon: never in WEAPONS / WEAPON_ORDER). */
+export const BOSS_MINIGUN = {
+  name: "Minigun",
+  /** Rounds per second once the barrels are spun up. */
+  roundsPerSecond: 15,
+  damagePerRound: 3,
+  /** Seconds the barrels need to spin up before the first round. */
+  spinUp: 0.7,
+  /** Seconds of fire per burst, then a pause. */
+  burst: 2.6,
+  pause: 1.4,
+  range: 70,
+} as const;
+
+/** Server-authoritative boss state, broadcast every tick. */
+export interface BossSnapshot {
+  p: Vec3;
+  yaw: number;
+  health: number;
+  alive: boolean;
+  /** Player being shot at (or spun up for), if any. */
+  targetId: string | null;
+  /** Barrels spinning (spin-up or firing). */
+  spinning: boolean;
+  /** Rounds leaving the barrels right now. */
+  firing: boolean;
+  /** Where the rounds go (target's chest), while there is a target. */
+  aim: Vec3 | null;
+}
+
 /* ================= SPAWNS ================= */
 export interface SpawnPoint { x: number; z: number; yaw: number }
 
@@ -194,6 +231,9 @@ export type ServerMessage =
   | { t: "killed"; victimId: string; killerId: string | null; weapon: WeaponId | null; cause: DamageCause | null }
   | { t: "respawned"; id: string; spawn: SpawnPoint; health: number }
   | { t: "scores"; players: { id: string; kills: number; deaths: number }[] }
+  /** Boss state (every tick while the server runs one). Its deaths come as
+   * "killed" with victimId BOSS_ID; its kills as "killed" with killerId BOSS_ID. */
+  | { t: "boss"; boss: BossSnapshot }
   | { t: "pong"; ts: number }
   | { t: "error"; message: string };
 

@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { SPAWN_POINTS, type SpawnPoint } from "../shared/protocol";
-import { parseCampusMap } from "../src/game/map/loader";
+import { parseCampusMap, type CampusMap } from "../src/game/map/loader";
 import type { MapSpawn } from "../src/game/map/types";
 
 export const DEFAULT_MAP_FILE = path.resolve(import.meta.dirname, "../public/maps/campus-el-carmen.json");
@@ -17,15 +17,20 @@ export function spawnsFromMap(map: { spawns: readonly MapSpawn[] }): readonly Sp
   return map.spawns.map((s) => ({ x: s.x, z: s.z, yaw: s.yaw }));
 }
 
+/** Reads and validates the map file; null (logged) on any error. */
+export function loadMap(file: string = DEFAULT_MAP_FILE, warn: (msg: string) => void = console.warn): CampusMap | null {
+  try {
+    return parseCampusMap(JSON.parse(readFileSync(file, "utf8")) as unknown);
+  } catch (err) {
+    warn(`[map] could not load ${file}, using the built-in spawn points and no boss: ${(err as Error).message}`);
+    return null;
+  }
+}
+
 /** Reads and validates the map file; logs and falls back to SPAWN_POINTS on any error. */
 export function loadMapSpawns(file: string = DEFAULT_MAP_FILE, warn: (msg: string) => void = console.warn): readonly SpawnPoint[] {
-  try {
-    const map = parseCampusMap(JSON.parse(readFileSync(file, "utf8")) as unknown);
-    return spawnsFromMap(map);
-  } catch (err) {
-    warn(`[map] could not load spawn points from ${file}, using the built-in list: ${(err as Error).message}`);
-    return SPAWN_POINTS;
-  }
+  const map = loadMap(file, warn);
+  return map ? spawnsFromMap(map) : SPAWN_POINTS;
 }
 
 /** Uniform pick from `list` using a [0, 1) random source (1 wraps to the first entry). */

@@ -1,4 +1,5 @@
 import {
+  BOSS_ID,
   FIRE_RATE_TOLERANCE,
   MAX_HEALTH,
   MAX_PLAYERS,
@@ -27,6 +28,7 @@ import {
   sanitizeName,
 } from "./validation";
 import { pickSpawn } from "./mapSpawns";
+import type { BossBrain } from "../src/game/boss/bossBrain";
 
 export interface RoomDeps {
   now: () => number;
@@ -40,6 +42,8 @@ export interface RoomDeps {
   disconnect: (clientId: string) => void;
   /** Where players (re)spawn; defaults to the protocol's built-in list (the real server passes the map's). */
   spawns?: readonly SpawnPoint[];
+  /** The minigun boss, when the server runs one (built from the map, see server/index.ts). */
+  boss?: BossBrain;
 }
 
 interface Player extends PlayerSnapshot {
@@ -83,6 +87,7 @@ export class GameRoom {
   private readonly sessionOwners = new Map<string, string>();
   private readonly playerSessionId = new Map<string, string>();
   private joinCounter = 0;
+  private lastTickAt: number | null = null;
 
   constructor(private readonly deps: RoomDeps) {}
 
@@ -124,6 +129,27 @@ export class GameRoom {
       .filter((p) => p.motion)
       .map((p) => ({ id: p.id, motion: p.motion as PlayerMotion }));
     if (moving.length > 0) this.deps.broadcast({ t: "states", players: moving });
+    this.tickBoss();
+  }
+
+  /** Moves the boss, applies its minigun damage and broadcasts its state. */
+  private tickBoss(): void {
+    const boss = this.deps.boss;
+    const now = this.deps.now();
+    const dt = this.lastTickAt === null ? 0 : Math.min(0.25, Math.max(0, (now - this.lastTickAt) / 1000));
+    this.lastTickAt = now;
+    if (!boss || this.players.size === 0) return;
+    const targets = [...this.players.values()]
+      .filter((p) => p.motion)
+      .map((p) => {
+        const m = p.motion as PlayerMotion;
+        return { id: p.id, x: m.p[0], y: m.p[1], z: m.p[2], alive: p.alive, inCar: m.car !== null };
+      });
+    for (const hit of boss.update(dt, targets)) {
+      const victim = this.players.get(hit.targetId);
+      if (victim?.alive) this.applyDamage(victim, hit.amount, { attackerId: BOSS_ID, weapon: null, cause: null });
+    }
+    this.deps.broadcast({ t: "boss", boss: boss.snapshot() });
   }
 
   /* ---------- handlers ---------- */
@@ -201,6 +227,7 @@ export class GameRoom {
     const end = parseVec3(msg.end);
     if (!origin || !end) return;
     if (!this.consumeFireRate(shooter, msg.weapon)) return;
+    if (msg.targetId === BOSS_ID) return this.onShootBoss(shooter, msg.weapon, origin, end);
 
     const target = this.validTarget(shooter, msg.weapon, msg.targetId);
     this.deps.broadcast(
@@ -211,6 +238,17 @@ export class GameRoom {
     const base = WEAPONS[msg.weapon].damage;
     const damage = target.motion?.car ? Math.round(base * CAR_DAMAGE_FACTOR) : base;
     this.applyDamage(target, damage, { attackerId: shooter.id, weapon: msg.weapon, cause: null });
+  }
+
+  private onShootBoss(shooter: Player, weapon: WeaponId, origin: [number, number, number], end: [number, number, number]): void {
+    const boss = this.deps.boss;
+    const reach = WEAPONS[weapon].range + RANGE_TOLERANCE;
+    const inReach = !!boss?.alive && !!shooter.motion && distance(shooter.motion.p, [boss.x, boss.y, boss.z]) <= reach;
+    this.deps.broadcast({ t: "shot", shooterId: shooter.id, weapon, origin, end, hit: inReach }, shooter.id);
+    if (!boss || !inReach || !boss.damage(WEAPONS[weapon].damage)) return;
+    shooter.kills++;
+    this.deps.broadcast({ t: "killed", victimId: BOSS_ID, killerId: shooter.id, weapon, cause: null });
+    this.broadcastScores();
   }
 
   private onRam(attacker: Player, msg: Record<string, unknown>): void {

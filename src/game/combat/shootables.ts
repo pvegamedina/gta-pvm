@@ -3,7 +3,7 @@
 
 import * as THREE from "three";
 
-export type ShootableKind = "building" | "vehicle" | "ped" | "remotePlayer" | "remoteCar";
+export type ShootableKind = "building" | "vehicle" | "ped" | "remotePlayer" | "remoteCar" | "boss";
 
 export interface ShootableMeta {
   kind: ShootableKind;

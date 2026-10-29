@@ -11,6 +11,8 @@ import {
   type PlayerMotion,
   type ServerMessage,
 } from "../shared/protocol";
+import { BOSS_ID, BOSS_MAX_HEALTH, BOSS_MINIGUN } from "../shared/protocol";
+import { BossBrain, type BossWorld } from "../src/game/boss/bossBrain";
 import { GameRoom, type RoomDeps } from "./room";
 import { WORLD_LIMIT } from "./validation";
 
@@ -439,6 +441,70 @@ describe("GameRoom", () => {
       c.room.handle("a", { t: "setCharacter", character: "beach" });
       c.room.handle("a", { t: "setCharacter", character: "suit" });
       expect(c.bcast("characterChanged").length).toBeGreaterThan(burst);
+    });
+  });
+
+  describe("boss", () => {
+    const open: BossWorld = {
+      groundY: () => 0,
+      walkable: () => true,
+      clearLine: () => true,
+      waypoints: [[0, 0]],
+      home: [0, 0],
+    };
+    /** Boss at the origin facing +x (where joinPlayer puts players); every round hits. */
+    function withBoss() {
+      const boss = new BossBrain(open, () => 0);
+      boss.yaw = Math.PI / 2;
+      return { ctx: setup({ boss }), boss };
+    }
+    const tickFor = (ctx: Ctx, seconds: number) => {
+      for (let t = 0; t < seconds; t += 0.05) {
+        ctx.advance(50);
+        ctx.room.tick();
+      }
+    };
+
+    it("broadcasts its state every tick once someone is playing", () => {
+      const { ctx } = withBoss();
+      ctx.room.tick();
+      expect(ctx.bcast("boss")).toHaveLength(0);
+      joinPlayer(ctx, "a", "Ana", 10);
+      ctx.room.tick();
+      const msg = ctx.bcast("boss").at(-1)?.msg as Extract<ServerMessage, { t: "boss" }>;
+      expect(msg.boss.alive).toBe(true);
+      expect(msg.boss.health).toBe(BOSS_MAX_HEALTH);
+    });
+
+    it("shoots players with the minigun and gets the kill", () => {
+      const { ctx } = withBoss();
+      joinPlayer(ctx, "a", "Ana", 10);
+      tickFor(ctx, BOSS_MINIGUN.spinUp + 0.5);
+      const hurt = ctx.bcast("health").map((b) => b.msg as Extract<ServerMessage, { t: "health" }>);
+      expect(hurt.length).toBeGreaterThan(0);
+      expect(hurt.every((h) => h.id === "a" && h.attackerId === BOSS_ID)).toBe(true);
+      tickFor(ctx, 4);
+      const killed = ctx.bcast("killed")[0]?.msg as Extract<ServerMessage, { t: "killed" }>;
+      expect(killed).toMatchObject({ victimId: "a", killerId: BOSS_ID });
+    });
+
+    it("takes damage from player shots and credits the kill", () => {
+      const { ctx, boss } = withBoss();
+      joinPlayer(ctx, "a", "Ana", 10);
+      boss.health = WEAPONS.pistol.damage;
+      ctx.room.handle("a", shoot(BOSS_ID));
+      expect(boss.alive).toBe(false);
+      const killed = ctx.bcast("killed")[0]?.msg as Extract<ServerMessage, { t: "killed" }>;
+      expect(killed).toMatchObject({ victimId: BOSS_ID, killerId: "a", weapon: "pistol" });
+      const scores = ctx.bcast("scores").at(-1)?.msg as Extract<ServerMessage, { t: "scores" }>;
+      expect(scores.players.find((p) => p.id === "a")?.kills).toBe(1);
+    });
+
+    it("ignores shots at the boss from out of range", () => {
+      const { ctx, boss } = withBoss();
+      joinPlayer(ctx, "a", "Ana", WEAPONS.pistol.range + 100);
+      ctx.room.handle("a", shoot(BOSS_ID));
+      expect(boss.health).toBe(BOSS_MAX_HEALTH);
     });
   });
 });
