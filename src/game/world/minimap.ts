@@ -1,6 +1,7 @@
 // Minimap: a pre-rendered top-down painting of the campus map (landuse,
 // roads by class, buildings, campus outline), rotated/panned to follow the
-// camera each frame. Also draws AI/parked vehicles and remote players as dots.
+// camera each frame. Also draws AI/parked vehicles and remote players as dots,
+// and big blips (the boss) that stick to the rim when they are out of range.
 
 import type { CampusMap } from "../map/loader";
 import { MINIMAP_PALETTE, paintMap } from "./campus/mapPainter";
@@ -15,6 +16,40 @@ export interface MinimapDot {
   z: number;
   color: string;
   r: number;
+}
+
+/** A big marker drawn in screen pixels; clamped to the rim when off the minimap. */
+export interface MinimapBlip {
+  x: number;
+  z: number;
+  color: string;
+  /** Radius in screen pixels. */
+  r: number;
+}
+
+/** Minimap centre and radius (px) inside the 180×180 canvas. */
+const CX = 90;
+const CY = 90;
+const RADIUS = 88;
+
+/**
+ * Where a world point lands on the minimap (canvas px), and whether it had to
+ * be pulled onto the rim (`edge`) because it is farther than the minimap shows.
+ */
+export function blipScreenPos(x: number, z: number, camYaw: number, camX: number, camZ: number, margin: number): { sx: number; sy: number; edge: boolean } {
+  const dx = x - camX;
+  const dz = z - camZ;
+  // Camera right -> screen right, camera forward -> screen up.
+  let sx = ZOOM * (dx * -Math.cos(camYaw) + dz * Math.sin(camYaw));
+  let sy = -ZOOM * (dx * Math.sin(camYaw) + dz * Math.cos(camYaw));
+  const d = Math.hypot(sx, sy);
+  const max = RADIUS - margin;
+  const edge = d > max;
+  if (edge) {
+    sx *= max / d;
+    sy *= max / d;
+  }
+  return { sx: CX + sx, sy: CY + sy, edge };
 }
 
 /** The painted map plus the world rectangle it covers. */
@@ -42,10 +77,11 @@ export function drawMinimap(
   camZ: number,
   headingYaw: number,
   dots: MinimapDot[],
+  blips: readonly MinimapBlip[] = [],
 ): void {
   const c = ctx;
-  const cx = 90;
-  const cy = 90;
+  const cx = CX;
+  const cy = CY;
   const z = ZOOM;
   const px = camX;
   const pz = camZ;
@@ -57,7 +93,7 @@ export function drawMinimap(
   c.clearRect(0, 0, 180, 180);
   c.save();
   c.beginPath();
-  c.arc(cx, cy, 88, 0, Math.PI * 2);
+  c.arc(cx, cy, RADIUS, 0, Math.PI * 2);
   c.clip();
   c.fillStyle = "#2a3324";
   c.fillRect(0, 0, 180, 180);
@@ -95,4 +131,31 @@ export function drawMinimap(
   c.textAlign = "center";
   c.textBaseline = "middle";
   c.fillText("N", cx + -rz * 76, cy + fz * 76);
+  for (const b of blips) drawBlip(c, b, blipScreenPos(b.x, b.z, camYaw, camX, camZ, b.r + 2));
+}
+
+/** A filled circle with a white ring; on the rim it gets an arrow pointing out towards the target. */
+function drawBlip(c: CanvasRenderingContext2D, b: MinimapBlip, pos: { sx: number; sy: number; edge: boolean }): void {
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  if (pos.edge) {
+    const a = Math.atan2(pos.sy - CY, pos.sx - CX);
+    c.save();
+    c.translate(pos.sx, pos.sy);
+    c.rotate(a);
+    c.fillStyle = b.color;
+    c.beginPath();
+    c.moveTo(b.r + 6, 0);
+    c.lineTo(b.r - 1, -5);
+    c.lineTo(b.r - 1, 5);
+    c.closePath();
+    c.fill();
+    c.restore();
+  }
+  c.fillStyle = b.color;
+  c.strokeStyle = "#fff";
+  c.lineWidth = 2;
+  c.beginPath();
+  c.arc(pos.sx, pos.sy, b.r, 0, Math.PI * 2);
+  c.fill();
+  c.stroke();
 }

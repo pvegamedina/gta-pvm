@@ -33,7 +33,7 @@ import { clamp } from "./core/math";
 import { CollisionGrid } from "./world/colliders";
 import { groundY, resetGround, surfaceY } from "./world/ground";
 import { createEnvironment } from "./world/environment";
-import { drawMinimap, type MinimapDot } from "./world/minimap";
+import { drawMinimap, type MinimapBlip, type MinimapDot } from "./world/minimap";
 import { buildCampusWorld, type CampusWorld } from "./world/campus/campusWorld";
 import { loadNatureAssets, updateNatureVisibility, type NatureAssets } from "./world/campus/nature";
 import { fetchCampusMap, type CampusMap } from "./map/loader";
@@ -1546,6 +1546,8 @@ export function createGame(): GameHandle {
   }
 
   const dots: MinimapDot[] = [];
+  /** Big markers that stay on the minimap rim when far away (the boss). */
+  const blips: MinimapBlip[] = [];
   function updateHud(dt: number): void {
     updatePlaces(dt);
     const hh = Math.floor(env.state.tod);
@@ -1599,10 +1601,11 @@ export function createGame(): GameHandle {
       if (Math.abs(m.p[0] - cam.fx) > 130 || Math.abs(m.p[2] - cam.fz) > 130) continue;
       dots.push({ x: m.p[0], z: m.p[2], color: "#4ea8ff", r: 3 });
     }
+    blips.length = 0;
     const boss = bossView.position();
-    if (boss) dots.push({ x: boss.x, z: boss.z, color: "#ff2d55", r: 5 });
+    if (boss) blips.push({ x: boss.x, z: boss.z, color: "#ff1e1e", r: 7 });
     const headingYaw = player.mode === "car" && player.car ? player.car.yaw : player.yaw;
-    drawMinimap(miniCtx, world?.minimap ?? null, cam.yaw, cam.fx, cam.fz, headingYaw, dots);
+    drawMinimap(miniCtx, world?.minimap ?? null, cam.yaw, cam.fx, cam.fz, headingYaw, dots, blips);
   }
 
   // ---------------- Character picker ----------------
